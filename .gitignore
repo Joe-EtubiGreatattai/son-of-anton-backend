@@ -1,0 +1,82 @@
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+package-lock.json
+.pnp/
+.pnp.cjs
+.pnp.js
+
+# Logs
+logs/
+*.log
+*.log.* 
+
+# Runtime data
+pids/
+*.pid
+*.seed
+*.pid.lock
+*.tgz
+
+# Coverage
+coverage/
+.nyc_output/
+lcov-report/
+
+# Build output
+dist/
+build/
+out/
+lib/
+public/
+
+# TypeScript
+*.tsbuildinfo
+
+# Environment files
+.env
+.env.*.local
+.env.local
+
+# IDEs / editors
+.vscode/
+.idea/
+*.sublime-workspace
+*.sublime-project
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+ehthumbs.db
+
+# Caches
+.cache/
+.parcel-cache/
+.npm/
+.yarn/cache/
+
+# Test runner caches
+.jest/cache
+jest.config.js.snap
+
+# Tooling
+.eslintcache
+.rollup.cache
+
+# Framework specific (optional)
+.next/
+.nuxt/
+.cache/
+public/
+
+# Docker overrides or local compose files
+docker-compose.override.yml
+
+# Misc
+coverage-report/
+*.iml

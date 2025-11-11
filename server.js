@@ -89,7 +89,8 @@ const userSchema = new mongoose.Schema({
     searchPreferences: {
         frequencyHours: { type: Number, default: 6 },
         notifyOnDeals: { type: Boolean, default: true },
-        maxPriceAlerts: { type: Boolean, default: true }
+        maxPriceAlerts: { type: Boolean, default: true },
+        quickSearchMode: { type: Boolean, default: true } // New preference for quick search mode
     }
 });
 
@@ -153,17 +154,16 @@ const getSystemPrompt = (user) => {
 YOUR PERSONALITY:
 - You're excited about helping people find great deals! Use emojis and exclamation marks!
 - You're very friendly and chatty - like talking to an enthusiastic best friend
-- You ask follow-up questions to understand EXACTLY what the user needs before searching
+- You understand users want quick results but also appreciate personalized recommendations
 - You're knowledgeable and give personalized recommendations
 - Keep responses SHORT and conversational - 2-3 sentences max unless providing detailed options
 
-FORMATTING GUIDELINES:
-Use these markdown-style formats to make your responses look great:
-- **Bold text** for emphasis on important points
-- *Italic text* for subtle emphasis
-- Use bullet points with - or * for lists
-- Use numbered lists (1., 2., 3.) for steps or rankings
-- Use line breaks to separate ideas
+NEW QUICK SEARCH STRATEGY:
+When users ask for products, follow this approach:
+
+1. **IMMEDIATE ACTION**: Always start searching right away with a basic query based on what they mentioned
+2. **OPTIONAL DETAILS**: While searching, ask if they want to provide more details for better results
+3. **BALANCED APPROACH**: Don't ask multiple questions before searching - get them results first!
 
 SPECIAL COMMANDS:
 - When users want ongoing searches, say: "SEARCH_PARTY: [item description]|[max budget]|[preferences]|[frequency in hours]"
@@ -175,13 +175,17 @@ MANAGING SEARCH PARTIES:
 - When users want to edit a search party, guide them to use the web interface
 - When users ask to change frequency, explain they can do it per search party
 
-IMPORTANT SEARCH RULES:
-1. NEVER search immediately when someone mentions a product vaguely
-2. ALWAYS ask clarifying questions first to get specific details
-3. Only respond with "SEARCH: [detailed query]" when you have enough specific information
-4. For ongoing searches, use "SEARCH_PARTY:" format
-5. ALWAYS ask about preferred search frequency when setting up a search party
-6. Suggest frequencies: 6 hours (frequent), 12 hours (balanced), 24 hours (daily)`;
+QUICK SEARCH FORMAT:
+When user mentions a product, respond with:
+- Start immediate search with basic query
+- Show quick results 
+- Ask if they want to refine with: budget, brand preferences, specific features, etc.
+
+Example approach:
+User: "I need a new laptop"
+You: "SEARCH: laptop deals today" + "Searching for laptops! 💻 Want to specify your budget or preferred brand for more tailored results?"
+
+This gives them immediate value while keeping the door open for better personalization.`;
 
     // Add personalized section if user is logged in
     if (user) {
@@ -297,7 +301,7 @@ app.post('/api/login', async (req, res) => {
 // Update user search preferences
 app.put('/api/user/preferences', authenticateToken, async (req, res) => {
     try {
-        const { frequencyHours, notifyOnDeals, maxPriceAlerts } = req.body;
+        const { frequencyHours, notifyOnDeals, maxPriceAlerts, quickSearchMode } = req.body;
         
         if (!req.user) {
             return res.status(401).json({ error: 'Authentication required' });
@@ -320,6 +324,10 @@ app.put('/api/user/preferences', authenticateToken, async (req, res) => {
         
         if (maxPriceAlerts !== undefined) {
             user.searchPreferences.maxPriceAlerts = maxPriceAlerts;
+        }
+
+        if (quickSearchMode !== undefined) {
+            user.searchPreferences.quickSearchMode = quickSearchMode;
         }
         
         await user.save();
@@ -354,6 +362,68 @@ app.get('/api/search-config', authenticateToken, async (req, res) => {
         res.status(500).json({ error: 'Internal server error' });
     }
 });
+
+// Helper function to detect product search intent
+function isProductSearchQuery(message) {
+    const searchTriggers = [
+        'find', 'search', 'look for', 'buy', 'purchase', 'shop for', 'get',
+        'need', 'want', 'looking for', 'shopping for', 'deal', 'price',
+        'cost', 'affordable', 'cheap', 'discount', 'sale'
+    ];
+    
+    const productCategories = [
+        'laptop', 'phone', 'tv', 'headphone', 'camera', 'tablet', 'watch',
+        'game', 'console', 'book', 'clothing', 'shoe', 'furniture',
+        'appliance', 'tool', 'electronic', 'computer', 'monitor',
+        'keyboard', 'mouse', 'printer', 'speaker', 'earbud', 'airpod'
+    ];
+    
+    const lowerMessage = message.toLowerCase();
+    
+    // Check if message contains search triggers
+    const hasSearchTrigger = searchTriggers.some(trigger => 
+        lowerMessage.includes(trigger)
+    );
+    
+    // Check if message contains product categories
+    const hasProductCategory = productCategories.some(category =>
+        lowerMessage.includes(category)
+    );
+    
+    // Check for specific product patterns
+    const productPatterns = [
+        /\d+\s*(inch|gb|tb|mb|ghz)/i,
+        /(rtx|gtx)\s*\d+/i,
+        /(iphone|samsung|macbook|ipad|thinkpad|xps)/i,
+        /\$\d+/,
+        /under\s*\$\d+/i
+    ];
+    
+    const hasProductPattern = productPatterns.some(pattern => 
+        pattern.test(lowerMessage)
+    );
+    
+    return hasSearchTrigger || hasProductCategory || hasProductPattern;
+}
+
+// Generate search query from user message
+function generateSearchQuery(message) {
+    const lowerMessage = message.toLowerCase();
+    
+    // Remove common conversational phrases
+    const cleanedMessage = message.replace(
+        /(can you |please |could you |i |want to |looking to |need to )?(find|search for|look for|get|buy|purchase)?\s*/gi, 
+        ''
+    ).trim();
+    
+    // Add "deals" or "best price" for better shopping results
+    if (cleanedMessage.length > 0) {
+        return `${cleanedMessage} deals today`;
+    }
+    
+    // Fallback to original message with shopping context
+    return `${message} shopping deals`;
+}
 
 // Chat endpoint
 app.post('/api/chat', authenticateToken, async (req, res) => {
@@ -423,7 +493,7 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
                     },
                     {
                         role: 'model',
-                        parts: [{ text: 'Understood! I am Son of Anton, ready to help with shopping! 🛍️' }]
+                        parts: [{ text: 'Understood! I am Son of Anton, ready to help with shopping! 🛍️ I\'ll search immediately and offer refinements!' }]
                     },
                     ...conversationHistory
                 ]
@@ -552,10 +622,48 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
             }
         }
 
+        // NEW: Check if this is a product search query and AI didn't trigger search
+        const shouldSearch = isProductSearchQuery(message) && !aiResponse.includes('SEARCH:');
+        
+        if (shouldSearch) {
+            const searchQuery = generateSearchQuery(message);
+            const displayMessage = `Searching for "${searchQuery}"... 🔍\n\nHere are some quick results! Want to specify your budget, brand, or other preferences for more tailored options?`;
+            
+            // Check user preference for quick search mode
+            const useQuickSearch = user ? user.searchPreferences.quickSearchMode : true;
+
+            if (useQuickSearch) {
+                // Perform search
+                const searchResults = await searchItem(searchQuery);
+                const { deals, totalValid } = findBestDeals(searchResults);
+
+                if (deals && deals.length > 0) {
+                    const recommendation = await getAIRecommendation(deals, searchQuery, user);
+                    const recommendationData = parseRecommendation(recommendation, deals);
+
+                    return res.json({
+                        sessionId: session,
+                        type: 'recommendation',
+                        message: displayMessage,
+                        searchQuery,
+                        deals: deals.slice(0, 3),
+                        recommendation: recommendationData,
+                        quickSearch: true
+                    });
+                } else {
+                    return res.json({
+                        sessionId: session,
+                        type: 'message',
+                        message: `Hmm, ${user ? user.username + ', ' : ''}couldn't find any deals for that. 🤔\n\nWant to try a different search or tell me more about what you're looking for?`
+                    });
+                }
+            }
+        }
+
         // Check if AI wants to search
         if (aiResponse.includes('SEARCH:')) {
             const searchQuery = aiResponse.split('SEARCH:')[1].trim();
-            const displayMessage = aiResponse.split('SEARCH:')[0].trim();
+            const displayMessage = aiResponse.split('SEARCH:')[0].trim() || `Searching for "${searchQuery}"... 🔍`;
 
             // Perform search
             const searchResults = await searchItem(searchQuery);

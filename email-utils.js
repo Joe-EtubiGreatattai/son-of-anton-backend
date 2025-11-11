@@ -7,7 +7,7 @@ const EMAIL_USER = process.env.EMAIL_USER;
 const EMAIL_PASS = process.env.EMAIL_PASS;
 const EMAIL_SERVICE = process.env.EMAIL_SERVICE || 'gmail';
 
-// Create and export transporter
+// Create and export transporter with better timeout settings
 let transporter = null;
 if (EMAIL_USER && EMAIL_PASS) {
     transporter = nodemailer.createTransport({
@@ -15,14 +15,32 @@ if (EMAIL_USER && EMAIL_PASS) {
         auth: {
             user: EMAIL_USER,
             pass: EMAIL_PASS
+        },
+        // Add timeout settings for Render
+        socketTimeout: 30000, // 30 seconds
+        connectionTimeout: 30000, // 30 seconds
+        greetingTimeout: 30000, // 30 seconds
+        // Try different ports
+        port: 587,
+        secure: false, // Use TLS
+        tls: {
+            rejectUnauthorized: false
         }
     });
-    console.log('✅ Email service configured');
+    
+    // Verify connection
+    transporter.verify(function(error, success) {
+        if (error) {
+            console.log('❌ Email connection failed:', error);
+        } else {
+            console.log('✅ Email service configured and ready');
+        }
+    });
 } else {
     console.warn('⚠️  Email credentials not found. Email notifications will be disabled.');
 }
 
-// Export the sendDealEmail function
+// Export the sendDealEmail function with better error handling
 async function sendDealEmail(user, searchParty, deals) {
     if (!transporter) {
         console.log('Email service not configured, skipping notification');
@@ -33,7 +51,7 @@ async function sendDealEmail(user, searchParty, deals) {
         const dealsList = deals.map((deal, index) => `
             <div style="background: #f9f9f9; padding: 15px; margin: 10px 0; border-radius: 8px; border-left: 4px solid #4CAF50;">
                 <h3 style="margin: 0 0 10px 0; color: #333;">${index + 1}. ${deal.title}</h3>
-                <p style="margin: 5px 0; font-size: 24px; color: #4CAF50; font-weight: bold;">${deal.price.toFixed(2)}</p>
+                <p style="margin: 5px 0; font-size: 24px; color: #4CAF50; font-weight: bold;">$${deal.price.toFixed(2)}</p>
                 <p style="margin: 5px 0; color: #666;">
                     <strong>Store:</strong> ${deal.source}<br>
                     ${deal.rating !== 'N/A' ? `<strong>Rating:</strong> ${deal.rating} (${deal.reviews} reviews)<br>` : ''}
@@ -42,7 +60,7 @@ async function sendDealEmail(user, searchParty, deals) {
             </div>
         `).join('');
 
-        const priceFilter = searchParty.maxPrice ? `<p><strong>Max Price:</strong> ${searchParty.maxPrice}</p>` : '';
+        const priceFilter = searchParty.maxPrice ? `<p><strong>Max Price:</strong> $${searchParty.maxPrice}</p>` : '';
         const preferences = searchParty.preferences ? `<p><strong>Preferences:</strong> ${searchParty.preferences}</p>` : '';
 
         const mailOptions = {
@@ -96,7 +114,9 @@ async function sendDealEmail(user, searchParty, deals) {
                     </div>
                 </body>
                 </html>
-            `
+            `,
+            // Add timeout for sending
+            timeout: 30000 // 30 seconds
         };
 
         await transporter.sendMail(mailOptions);

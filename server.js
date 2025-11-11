@@ -166,15 +166,22 @@ Use these markdown-style formats to make your responses look great:
 - Use line breaks to separate ideas
 
 SPECIAL COMMANDS:
-- When users want ongoing searches, say: "SEARCH_PARTY: [item description]|[max budget]|[preferences]"
+- When users want ongoing searches, say: "SEARCH_PARTY: [item description]|[max budget]|[preferences]|[frequency in hours]"
 - Only use SEARCH: when doing immediate single searches
 - Keep all responses concise and friendly
+
+MANAGING SEARCH PARTIES:
+- When users ask about their search parties, respond with: "LIST_SEARCH_PARTIES"
+- When users want to edit a search party, guide them to use the web interface
+- When users ask to change frequency, explain they can do it per search party
 
 IMPORTANT SEARCH RULES:
 1. NEVER search immediately when someone mentions a product vaguely
 2. ALWAYS ask clarifying questions first to get specific details
 3. Only respond with "SEARCH: [detailed query]" when you have enough specific information
-4. For ongoing searches, use "SEARCH_PARTY:" format`;
+4. For ongoing searches, use "SEARCH_PARTY:" format
+5. ALWAYS ask about preferred search frequency when setting up a search party
+6. Suggest frequencies: 6 hours (frequent), 12 hours (balanced), 24 hours (daily)`;
 
     // Add personalized section if user is logged in
     if (user) {
@@ -450,6 +457,44 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
             activeSessions.set(session, conversationHistory);
         }
 
+        // Check if AI wants to list search parties
+        if (aiResponse.includes('LIST_SEARCH_PARTIES')) {
+            if (!user) {
+                return res.json({
+                    sessionId: session,
+                    type: 'message',
+                    message: "🔒 To view your search parties, you need to be logged in! Please create an account to save your ongoing searches."
+                });
+            }
+
+            const searchParties = await SearchParty.find({ userId: user._id }).sort({ createdAt: -1 });
+            
+            if (searchParties.length === 0) {
+                return res.json({
+                    sessionId: session,
+                    type: 'message',
+                    message: `You don't have any active search parties yet, ${user.username}! 🎯\n\nWant to start one? Just tell me what you're looking for!`
+                });
+            }
+
+            return res.json({
+                sessionId: session,
+                type: 'search_parties_list',
+                message: `Here are your search parties, ${user.username}! 🎯`,
+                searchParties: searchParties.map(party => ({
+                    id: party._id,
+                    itemName: party.itemName,
+                    maxPrice: party.maxPrice,
+                    preferences: party.preferences,
+                    isActive: party.isActive,
+                    searchFrequency: party.searchFrequency || user.searchPreferences.frequencyHours,
+                    lastSearched: party.lastSearched,
+                    foundResults: party.foundResults.length,
+                    createdAt: party.createdAt
+                }))
+            });
+        }
+
         // Check if AI wants to create a search party
         if (aiResponse.includes('SEARCH_PARTY:')) {
             if (!user) {
@@ -474,6 +519,16 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
             }
             
             const preferences = partyData[2]?.trim() || '';
+            
+            // Parse frequency (default to user preference if not specified)
+            let frequency = user.searchPreferences.frequencyHours;
+            if (partyData[3]) {
+                const freqStr = partyData[3].trim();
+                const parsedFreq = parseFloat(freqStr);
+                if (!isNaN(parsedFreq) && parsedFreq >= MIN_SEARCH_INTERVAL && parsedFreq <= MAX_SEARCH_INTERVAL) {
+                    frequency = parsedFreq;
+                }
+            }
 
             if (itemName) {
                 const searchParty = new SearchParty({
@@ -482,12 +537,12 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
                     searchQuery: itemName,
                     ...(maxPrice !== null && { maxPrice }),
                     preferences,
-                    searchFrequency: user.searchPreferences.frequencyHours
+                    searchFrequency: frequency
                 });
                 await searchParty.save();
 
-                const priceMsg = maxPrice ? ` under ${maxPrice}` : '';
-                const frequencyMsg = ` (searches every ${user.searchPreferences.frequencyHours} hours)`;
+                const priceMsg = maxPrice ? ` under $${maxPrice}` : '';
+                const frequencyMsg = ` (searches every ${frequency} hours)`;
                 
                 return res.json({
                     sessionId: session,
@@ -652,6 +707,56 @@ app.put('/api/search-parties/:id/frequency', authenticateToken, async (req, res)
         });
     } catch (error) {
         console.error('Update search frequency error:', error);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// Update search party details
+app.put('/api/search-parties/:id', authenticateToken, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { itemName, maxPrice, preferences, isActive } = req.body;
+
+        const searchParty = await SearchParty.findOne({ _id: id, userId: req.user._id });
+
+        if (!searchParty) {
+            return res.status(404).json({ error: 'Search party not found' });
+        }
+
+        if (itemName !== undefined) searchParty.itemName = itemName;
+        if (maxPrice !== undefined) searchParty.maxPrice = maxPrice;
+        if (preferences !== undefined) searchParty.preferences = preferences;
+        if (isActive !== undefined) searchParty.isActive = isActive;
+
+        await searchParty.save();
+
+        res.json({ 
+            message: 'Search party updated successfully',
+            searchParty 
+        });
+    } catch (error) {
+        console.error('Update search party error:', error);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// Delete search party
+app.delete('/api/search-parties/:id', authenticateToken, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const searchParty = await SearchParty.findOne({ _id: id, userId: req.user._id });
+
+        if (!searchParty) {
+            return res.status(404).json({ error: 'Search party not found' });
+        }
+
+        await SearchParty.deleteOne({ _id: id });
+
+        res.json({ 
+            message: 'Search party deleted successfully'
+        });
+    } catch (error) {
+        console.error('Delete search party error:', error);
         res.status(500).json({ error: 'Internal server error' });
     }
 });
@@ -946,6 +1051,8 @@ app.listen(PORT, () => {
     console.log(`   GET /api/search-parties - Get search parties`);
     console.log(`   PUT /api/search-parties/:id/toggle - Toggle search party`);
     console.log(`   PUT /api/search-parties/:id/frequency - Update search frequency`);
+    console.log(`   PUT /api/search-parties/:id - Update search party details`);
+    console.log(`   DELETE /api/search-parties/:id - Delete search party`);
     console.log(`   PUT /api/user/preferences - Update user preferences`);
     console.log(`   GET /api/search-config - Get search configuration`);
     console.log(`   POST /api/reset - Reset conversation`);

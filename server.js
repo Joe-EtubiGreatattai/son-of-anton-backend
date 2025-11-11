@@ -11,13 +11,52 @@ const app = express();
 app.use(express.json());
 app.use(cors());
 
-// Load API keys from environment variables
+// Load API keys and configuration from environment variables
 const SERP_API_KEY = process.env.SERP_API_KEY;
 const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY;
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key';
 const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/sonofanton';
 const SERP_BASE_URL = 'https://serpapi.com/search';
 const GEMINI_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent';
+
+// Search frequency configuration - user configurable via environment variables
+const SEARCH_FREQUENCY_HOURS = parseInt(process.env.SEARCH_FREQUENCY_HOURS) || 6; // Default to 6 hours
+const SEARCH_FREQUENCY_MINUTES = parseInt(process.env.SEARCH_FREQUENCY_MINUTES) || null; // Optional minutes configuration
+const MIN_SEARCH_INTERVAL = 1; // Minimum 1 hour between searches for the same party
+const MAX_SEARCH_INTERVAL = 24 * 7; // Maximum 1 week between searches
+
+// Calculate the cron interval in milliseconds
+function getCronInterval() {
+    if (SEARCH_FREQUENCY_MINUTES) {
+        return SEARCH_FREQUENCY_MINUTES * 60 * 1000; // Convert minutes to milliseconds
+    }
+    return SEARCH_FREQUENCY_HOURS * 60 * 60 * 1000; // Convert hours to milliseconds
+}
+
+const CRON_INTERVAL = getCronInterval();
+
+// Validate search frequency
+function validateSearchFrequency() {
+    let frequencyHours = SEARCH_FREQUENCY_HOURS;
+    
+    if (SEARCH_FREQUENCY_MINUTES) {
+        frequencyHours = SEARCH_FREQUENCY_MINUTES / 60;
+    }
+    
+    if (frequencyHours < MIN_SEARCH_INTERVAL) {
+        console.warn(`⚠️  Search frequency (${frequencyHours}h) is below minimum (${MIN_SEARCH_INTERVAL}h). Using minimum frequency.`);
+        return MIN_SEARCH_INTERVAL * 60 * 60 * 1000;
+    }
+    
+    if (frequencyHours > MAX_SEARCH_INTERVAL) {
+        console.warn(`⚠️  Search frequency (${frequencyHours}h) exceeds maximum (${MAX_SEARCH_INTERVAL}h). Using maximum frequency.`);
+        return MAX_SEARCH_INTERVAL * 60 * 60 * 1000;
+    }
+    
+    return CRON_INTERVAL;
+}
+
+const VALIDATED_CRON_INTERVAL = validateSearchFrequency();
 
 // Email configuration - use the shared module
 const { transporter, sendDealEmail } = require('./email-utils');
@@ -46,14 +85,19 @@ const userSchema = new mongoose.Schema({
     username: { type: String, required: true, unique: true },
     email: { type: String, required: true, unique: true },
     password: { type: String, required: true },
-    createdAt: { type: Date, default: Date.now }
+    createdAt: { type: Date, default: Date.now },
+    searchPreferences: {
+        frequencyHours: { type: Number, default: 6 },
+        notifyOnDeals: { type: Boolean, default: true },
+        maxPriceAlerts: { type: Boolean, default: true }
+    }
 });
 
 const conversationSchema = new mongoose.Schema({
     userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     sessionId: { type: String, required: true },
     messages: [{
-        role: { type: String, enum: ['user', 'model'], required: true }, // Changed from 'assistant' to 'model'
+        role: { type: String, enum: ['user', 'model'], required: true },
         content: { type: String, required: true },
         timestamp: { type: Date, default: Date.now }
     }],
@@ -69,6 +113,7 @@ const searchPartySchema = new mongoose.Schema({
     preferences: { type: String },
     isActive: { type: Boolean, default: true },
     lastSearched: { type: Date, default: Date.now },
+    searchFrequency: { type: Number, default: null }, // User-specific frequency override
     foundResults: [{
         title: String,
         price: Number,
@@ -87,6 +132,19 @@ const SearchParty = mongoose.model('SearchParty', searchPartySchema);
 
 // Store active sessions in memory (for temporary sessions)
 const activeSessions = new Map();
+
+// Display search frequency configuration
+function displaySearchConfiguration() {
+    console.log('\n🔍 SEARCH CONFIGURATION:');
+    if (SEARCH_FREQUENCY_MINUTES) {
+        console.log(`   Frequency: Every ${SEARCH_FREQUENCY_MINUTES} minutes`);
+    } else {
+        console.log(`   Frequency: Every ${SEARCH_FREQUENCY_HOURS} hours`);
+    }
+    console.log(`   Minimum interval: ${MIN_SEARCH_INTERVAL} hour`);
+    console.log(`   Maximum interval: ${MAX_SEARCH_INTERVAL} hours (1 week)`);
+    console.log(`   Next search in: ${VALIDATED_CRON_INTERVAL / (60 * 1000)} minutes\n`);
+}
 
 // Dynamic SYSTEM_PROMPT that includes user information
 const getSystemPrompt = (user) => {
@@ -180,7 +238,12 @@ app.post('/api/register', async (req, res) => {
         res.status(201).json({
             message: 'User created successfully',
             token,
-            user: { id: user._id, username: user.username, email: user.email }
+            user: { 
+                id: user._id, 
+                username: user.username, 
+                email: user.email,
+                searchPreferences: user.searchPreferences
+            }
         });
     } catch (error) {
         console.error('Registration error:', error);
@@ -211,10 +274,76 @@ app.post('/api/login', async (req, res) => {
         res.json({
             message: 'Login successful',
             token,
-            user: { id: user._id, username: user.username, email: user.email }
+            user: { 
+                id: user._id, 
+                username: user.username, 
+                email: user.email,
+                searchPreferences: user.searchPreferences
+            }
         });
     } catch (error) {
         console.error('Login error:', error);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// Update user search preferences
+app.put('/api/user/preferences', authenticateToken, async (req, res) => {
+    try {
+        const { frequencyHours, notifyOnDeals, maxPriceAlerts } = req.body;
+        
+        if (!req.user) {
+            return res.status(401).json({ error: 'Authentication required' });
+        }
+
+        const user = await User.findById(req.user._id);
+        
+        if (frequencyHours !== undefined) {
+            if (frequencyHours < MIN_SEARCH_INTERVAL || frequencyHours > MAX_SEARCH_INTERVAL) {
+                return res.status(400).json({ 
+                    error: `Search frequency must be between ${MIN_SEARCH_INTERVAL} and ${MAX_SEARCH_INTERVAL} hours` 
+                });
+            }
+            user.searchPreferences.frequencyHours = frequencyHours;
+        }
+        
+        if (notifyOnDeals !== undefined) {
+            user.searchPreferences.notifyOnDeals = notifyOnDeals;
+        }
+        
+        if (maxPriceAlerts !== undefined) {
+            user.searchPreferences.maxPriceAlerts = maxPriceAlerts;
+        }
+        
+        await user.save();
+        
+        res.json({
+            message: 'Preferences updated successfully',
+            searchPreferences: user.searchPreferences
+        });
+    } catch (error) {
+        console.error('Update preferences error:', error);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// Get current search configuration
+app.get('/api/search-config', authenticateToken, async (req, res) => {
+    try {
+        const userConfig = req.user ? req.user.searchPreferences : null;
+        
+        res.json({
+            system: {
+                frequencyHours: SEARCH_FREQUENCY_HOURS,
+                frequencyMinutes: SEARCH_FREQUENCY_MINUTES,
+                minInterval: MIN_SEARCH_INTERVAL,
+                maxInterval: MAX_SEARCH_INTERVAL,
+                currentInterval: VALIDATED_CRON_INTERVAL / (60 * 60 * 1000) // Convert to hours
+            },
+            user: userConfig
+        });
+    } catch (error) {
+        console.error('Get search config error:', error);
         res.status(500).json({ error: 'Internal server error' });
     }
 });
@@ -239,7 +368,7 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
             conversationDoc = await Conversation.findOne({ userId: user._id, sessionId: session });
             if (conversationDoc) {
                 conversationHistory = conversationDoc.messages.map(msg => ({
-                    role: msg.role, // Already 'user' or 'model'
+                    role: msg.role,
                     parts: [{ text: msg.content }]
                 }));
             }
@@ -312,7 +441,7 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
 
         // Save AI response to DB
         if (user && conversationDoc) {
-            const assistantMessage = { role: 'model', content: aiResponse }; // Changed to 'model'
+            const assistantMessage = { role: 'model', content: aiResponse };
             conversationDoc.messages.push(assistantMessage);
             conversationDoc.updatedAt = new Date();
             await conversationDoc.save();
@@ -351,16 +480,19 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
                     userId: user._id,
                     itemName,
                     searchQuery: itemName,
-                    ...(maxPrice !== null && { maxPrice }), // Only include if valid
-                    preferences
+                    ...(maxPrice !== null && { maxPrice }),
+                    preferences,
+                    searchFrequency: user.searchPreferences.frequencyHours
                 });
                 await searchParty.save();
 
                 const priceMsg = maxPrice ? ` under ${maxPrice}` : '';
+                const frequencyMsg = ` (searches every ${user.searchPreferences.frequencyHours} hours)`;
+                
                 return res.json({
                     sessionId: session,
                     type: 'message',
-                    message: `🎉 Search Party started, ${user.username}! I'll keep looking for "${itemName}"${priceMsg} and notify you when I find great deals!`
+                    message: `🎉 Search Party started, ${user.username}! I'll keep looking for "${itemName}"${priceMsg}${frequencyMsg} and notify you when I find great deals!`
                 });
             }
         }
@@ -383,7 +515,7 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
                     type: 'recommendation',
                     message: formatDisplayMessage(displayMessage),
                     searchQuery,
-                    deals: deals.slice(0, 3), // Return only top 3 deals
+                    deals: deals.slice(0, 3),
                     recommendation: recommendationData
                 });
             } else {
@@ -489,6 +621,37 @@ app.put('/api/search-parties/:id/toggle', authenticateToken, async (req, res) =>
         });
     } catch (error) {
         console.error('Toggle search party error:', error);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// Update search party frequency
+app.put('/api/search-parties/:id/frequency', authenticateToken, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { frequencyHours } = req.body;
+        
+        if (!frequencyHours || frequencyHours < MIN_SEARCH_INTERVAL || frequencyHours > MAX_SEARCH_INTERVAL) {
+            return res.status(400).json({ 
+                error: `Frequency must be between ${MIN_SEARCH_INTERVAL} and ${MAX_SEARCH_INTERVAL} hours` 
+            });
+        }
+
+        const searchParty = await SearchParty.findOne({ _id: id, userId: req.user._id });
+
+        if (!searchParty) {
+            return res.status(404).json({ error: 'Search party not found' });
+        }
+
+        searchParty.searchFrequency = frequencyHours;
+        await searchParty.save();
+
+        res.json({ 
+            message: `Search frequency updated to every ${frequencyHours} hours`,
+            searchParty 
+        });
+    } catch (error) {
+        console.error('Update search frequency error:', error);
         res.status(500).json({ error: 'Internal server error' });
     }
 });
@@ -656,10 +819,19 @@ app.post('/api/reset', authenticateToken, async (req, res) => {
 
 // Health check
 app.get('/api/health', (req, res) => {
-    res.json({ status: 'ok', message: 'Son of Anton API is running!' });
+    res.json({ 
+        status: 'ok', 
+        message: 'Son of Anton API is running!',
+        searchConfig: {
+            frequency: SEARCH_FREQUENCY_MINUTES ? 
+                `${SEARCH_FREQUENCY_MINUTES} minutes` : 
+                `${SEARCH_FREQUENCY_HOURS} hours`,
+            nextRunIn: `${VALIDATED_CRON_INTERVAL / (60 * 1000)} minutes`
+        }
+    });
 });
 
-// Search Party Cron Job (run this separately or integrate with a cron service)
+// Search Party Cron Job
 async function runSearchParties() {
     try {
         console.log('🕒 CRON JOB: Starting Search Party execution...');
@@ -672,23 +844,28 @@ async function runSearchParties() {
         if (activeParties.length > 0) {
             console.log('📋 ACTIVE SEARCH PARTIES:');
             activeParties.forEach((party, index) => {
-                console.log(`   ${index + 1}. "${party.itemName}" - User: ${party.userId} - Max Price: ${party.maxPrice || 'None'} - Last Searched: ${party.lastSearched}`);
+                const userFrequency = party.searchFrequency || SEARCH_FREQUENCY_HOURS;
+                console.log(`   ${index + 1}. "${party.itemName}" - User: ${party.userId} - Frequency: ${userFrequency}h - Last Searched: ${party.lastSearched}`);
             });
         } else {
             console.log('   No active search parties found');
         }
         
         for (const party of activeParties) {
-            // Only search once per day
-            const timeSinceLastSearch = Date.now() - party.lastSearched.getTime();
-            const oneDayInMs = 24 * 60 * 60 * 1000;
+            // Use user-specific frequency if set, otherwise use system default
+            const userFrequencyHours = party.searchFrequency || SEARCH_FREQUENCY_HOURS;
+            const userFrequencyMs = userFrequencyHours * 60 * 60 * 1000;
             
-            if (timeSinceLastSearch < oneDayInMs) {
-                console.log(`⏭️  Skipping "${party.itemName}" - searched ${Math.round(timeSinceLastSearch / (60 * 60 * 1000))} hours ago (less than 24 hours)`);
+            // Only search based on user's preferred frequency
+            const timeSinceLastSearch = Date.now() - party.lastSearched.getTime();
+            
+            if (timeSinceLastSearch < userFrequencyMs) {
+                const hoursSince = Math.round(timeSinceLastSearch / (60 * 60 * 1000));
+                console.log(`⏭️  Skipping "${party.itemName}" - searched ${hoursSince}h ago (less than ${userFrequencyHours}h)`);
                 continue;
             }
 
-            console.log(`🔎 Searching for: "${party.itemName}" (User: ${party.userId})`);
+            console.log(`🔎 Searching for: "${party.itemName}" (User: ${party.userId}, Frequency: ${userFrequencyHours}h)`);
             
             const results = await searchItem(party.searchQuery);
             const { deals } = findBestDeals(results);
@@ -705,8 +882,8 @@ async function runSearchParties() {
                     // Get user info for email
                     const user = await User.findById(party.userId);
                     
-                    if (user) {
-                        // Send email notification using the imported function
+                    if (user && user.searchPreferences.notifyOnDeals) {
+                        // Send email notification
                         const emailSent = await sendDealEmail(user, party, filteredDeals.slice(0, 3));
                         
                         if (emailSent) {
@@ -714,8 +891,10 @@ async function runSearchParties() {
                         } else {
                             console.log(`❌ Failed to send email to ${user.email}`);
                         }
-                    } else {
+                    } else if (!user) {
                         console.log(`❌ User not found for ID: ${party.userId}`);
+                    } else {
+                        console.log(`📧 Email notifications disabled for user ${user.email}`);
                     }
 
                     // Add new results to database
@@ -758,6 +937,7 @@ module.exports = {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log(`🚀 Son of Anton API running on port ${PORT}`);
+    displaySearchConfiguration();
     console.log(`📡 Endpoints:`);
     console.log(`   POST /api/register - Create account`);
     console.log(`   POST /api/login - Login`);
@@ -765,18 +945,20 @@ app.listen(PORT, () => {
     console.log(`   GET /api/conversations - Get conversation history`);
     console.log(`   GET /api/search-parties - Get search parties`);
     console.log(`   PUT /api/search-parties/:id/toggle - Toggle search party`);
+    console.log(`   PUT /api/search-parties/:id/frequency - Update search frequency`);
+    console.log(`   PUT /api/user/preferences - Update user preferences`);
+    console.log(`   GET /api/search-config - Get search configuration`);
     console.log(`   POST /api/reset - Reset conversation`);
     console.log(`   GET /api/health - Health check`);
 });
 
-// Run search parties every hour (in production, use a proper cron job)
-const CRON_INTERVAL = 60 * 60 * 1000; // 1 hour
-console.log(`⏰ Setting up Search Party cron job to run every ${CRON_INTERVAL / (60 * 1000)} minutes`);
+// Setup Search Party cron job
+console.log(`⏰ Setting up Search Party cron job to run every ${VALIDATED_CRON_INTERVAL / (60 * 1000)} minutes`);
 
 setInterval(() => {
     console.log(`\n🔄 CRON JOB: Scheduled Search Party execution started at ${new Date().toISOString()}`);
     runSearchParties();
-}, CRON_INTERVAL);
+}, VALIDATED_CRON_INTERVAL);
 
 // Run immediately on startup to show current state
 setTimeout(() => {

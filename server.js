@@ -766,14 +766,34 @@ app.get('/api/health', (req, res) => {
 // Search Party Cron Job (run this separately or integrate with a cron service)
 async function runSearchParties() {
     try {
+        console.log('🕒 CRON JOB: Starting Search Party execution...');
+        
         const activeParties = await SearchParty.find({ isActive: true });
+        
+        console.log(`🔍 CRON JOB: Found ${activeParties.length} active search parties`);
+        
+        // Log all active search parties
+        if (activeParties.length > 0) {
+            console.log('📋 ACTIVE SEARCH PARTIES:');
+            activeParties.forEach((party, index) => {
+                console.log(`   ${index + 1}. "${party.itemName}" - User: ${party.userId} - Max Price: ${party.maxPrice || 'None'} - Last Searched: ${party.lastSearched}`);
+            });
+        } else {
+            console.log('   No active search parties found');
+        }
         
         for (const party of activeParties) {
             // Only search once per day
-            if (Date.now() - party.lastSearched.getTime() < 24 * 60 * 60 * 1000) {
+            const timeSinceLastSearch = Date.now() - party.lastSearched.getTime();
+            const oneDayInMs = 24 * 60 * 60 * 1000;
+            
+            if (timeSinceLastSearch < oneDayInMs) {
+                console.log(`⏭️  Skipping "${party.itemName}" - searched ${Math.round(timeSinceLastSearch / (60 * 60 * 1000))} hours ago (less than 24 hours)`);
                 continue;
             }
 
+            console.log(`🔎 Searching for: "${party.itemName}" (User: ${party.userId})`);
+            
             const results = await searchItem(party.searchQuery);
             const { deals } = findBestDeals(results);
 
@@ -782,6 +802,8 @@ async function runSearchParties() {
                 const filteredDeals = party.maxPrice 
                     ? deals.filter(deal => deal.price <= party.maxPrice)
                     : deals;
+
+                console.log(`   Found ${deals.length} total deals, ${filteredDeals.length} after price filtering`);
 
                 if (filteredDeals.length > 0) {
                     // Get user info for email
@@ -793,7 +815,11 @@ async function runSearchParties() {
                         
                         if (emailSent) {
                             console.log(`📧 Email notification sent to ${user.email}`);
+                        } else {
+                            console.log(`❌ Failed to send email to ${user.email}`);
                         }
+                    } else {
+                        console.log(`❌ User not found for ID: ${party.userId}`);
                     }
 
                     // Add new results to database
@@ -806,15 +832,21 @@ async function runSearchParties() {
                     party.lastSearched = new Date();
                     await party.save();
 
-                    console.log(`✅ Found ${filteredDeals.length} new deals for ${party.itemName}`);
+                    console.log(`✅ Saved ${newResults.length} new deals for "${party.itemName}"`);
+                } else {
+                    console.log(`❌ No deals found within price limit for "${party.itemName}"`);
                 }
+            } else {
+                console.log(`❌ No deals found for "${party.itemName}"`);
             }
 
             // Prevent API rate limiting
             await new Promise(resolve => setTimeout(resolve, 2000));
         }
+        
+        console.log('✅ CRON JOB: Search Party execution completed');
     } catch (error) {
-        console.error('Search party cron error:', error);
+        console.error('❌ CRON JOB: Search party cron error:', error);
     }
 }
 
@@ -833,4 +865,16 @@ app.listen(PORT, () => {
 });
 
 // Run search parties every hour (in production, use a proper cron job)
-setInterval(runSearchParties, 60 * 60 * 1000);
+const CRON_INTERVAL = 60 * 60 * 1000; // 1 hour
+console.log(`⏰ Setting up Search Party cron job to run every ${CRON_INTERVAL / (60 * 1000)} minutes`);
+
+setInterval(() => {
+    console.log(`\n🔄 CRON JOB: Scheduled Search Party execution started at ${new Date().toISOString()}`);
+    runSearchParties();
+}, CRON_INTERVAL);
+
+// Run immediately on startup to show current state
+setTimeout(() => {
+    console.log(`\n🚀 INITIAL CRON JOB: Running initial Search Party check at ${new Date().toISOString()}`);
+    runSearchParties();
+}, 5000);

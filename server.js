@@ -22,7 +22,7 @@ const GEMINI_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemi
 // Search frequency configuration - user configurable via environment variables
 const SEARCH_FREQUENCY_HOURS = parseInt(process.env.SEARCH_FREQUENCY_HOURS) || 6; // Default to 6 hours
 const SEARCH_FREQUENCY_MINUTES = parseInt(process.env.SEARCH_FREQUENCY_MINUTES) || null; // Optional minutes configuration
-const MIN_SEARCH_INTERVAL = 0.1667; // Minimum 1 hour between searches for the same party
+const MIN_SEARCH_INTERVAL = 0.0667; // Minimum 1 hour between searches for the same party
 const MAX_SEARCH_INTERVAL = 24 * 7; // Maximum 1 week between searches
 
 // Calculate the cron interval in milliseconds

@@ -120,6 +120,7 @@ const searchPartySchema = new mongoose.Schema({
         price: Number,
         source: String,
         link: String,
+        image: String,
         rating: String,
         reviews: String,
         foundAt: { type: Date, default: Date.now }
@@ -907,16 +908,21 @@ function findBestDeals(results) {
     for (const item of shoppingResults) {
         if (!item.price) continue;
 
-        const priceStr = item.price.replace(/[$,]/g, '');
+        // Extract price number robustly
+        const priceStr = (typeof item.price === 'string') ? item.price.replace(/[$,]/g, '') : ('' + item.price);
         const price = parseFloat(priceStr);
 
         if (isNaN(price)) continue;
 
+        // Try common image fields SerpApi may return for shopping results
+        const imageUrl = item.thumbnail || item.image || (item.images && item.images[0] && item.images[0].src) || (item.product && item.product.thumbnail) || null;
+
         validResults.push({
             title: item.title || 'Unknown',
             price: price,
-            source: item.source || 'Unknown',
-            link: item.link || '#',
+            source: item.source || item.merchant || item.store || 'Unknown',
+            link: item.link || item.url || (item.product && item.product.link) || '#',
+            image: imageUrl,
             rating: item.rating || 'N/A',
             reviews: item.reviews || 'N/A'
         });
@@ -1112,7 +1118,13 @@ async function runSearchParties() {
 
                     // Add new results to database
                     const newResults = filteredDeals.slice(0, 3).map(deal => ({
-                        ...deal,
+                        title: deal.title,
+                        price: deal.price,
+                        source: deal.source,
+                        link: deal.link,
+                        image: deal.image,
+                        rating: deal.rating,
+                        reviews: deal.reviews,
                         foundAt: new Date()
                     }));
                     

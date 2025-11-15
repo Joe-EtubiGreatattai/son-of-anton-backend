@@ -647,7 +647,7 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
                         type: 'recommendation',
                         message: displayMessage,
                         searchQuery,
-                        deals: deals.slice(0, 3),
+                        deals: deals.slice(0, 6),
                         recommendation: recommendationData,
                         quickSearch: true
                     });
@@ -679,7 +679,7 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
                     type: 'recommendation',
                     message: formatDisplayMessage(displayMessage),
                     searchQuery,
-                    deals: deals.slice(0, 3),
+                    deals: deals.slice(0, 6),
                     recommendation: recommendationData
                 });
             } else {

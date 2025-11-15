@@ -1,4 +1,4 @@
-// server.js
+// server.js - Complete with Affiliate Link Integration
 require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
@@ -19,18 +19,37 @@ const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/sonofa
 const SERP_BASE_URL = 'https://serpapi.com/search';
 const GEMINI_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent';
 
-// Search frequency configuration - user configurable via environment variables
-const SEARCH_FREQUENCY_HOURS = parseInt(process.env.SEARCH_FREQUENCY_HOURS) || 6; // Default to 6 hours
-const SEARCH_FREQUENCY_MINUTES = parseInt(process.env.SEARCH_FREQUENCY_MINUTES) || null; // Optional minutes configuration
-const MIN_SEARCH_INTERVAL = 0.0667; // Minimum 1 hour between searches for the same party
-const MAX_SEARCH_INTERVAL = 24 * 7; // Maximum 1 week between searches
+// Search frequency configuration
+const SEARCH_FREQUENCY_HOURS = parseInt(process.env.SEARCH_FREQUENCY_HOURS) || 6;
+const SEARCH_FREQUENCY_MINUTES = parseInt(process.env.SEARCH_FREQUENCY_MINUTES) || null;
+const MIN_SEARCH_INTERVAL = 0.0667;
+const MAX_SEARCH_INTERVAL = 24 * 7;
 
-// Calculate the cron interval in milliseconds
+// Affiliate configuration
+const AFFILIATE_CONFIGS = {
+    amazon: {
+        enabled: process.env.AMAZON_AFFILIATE_ENABLED === 'true',
+        tag: process.env.AMAZON_AFFILIATE_TAG || 'your-tag-20',
+        domains: ['amazon.com', 'amazon.co.uk', 'amazon.ca', 'amazon.de', 'amazon.fr', 'amzn.to']
+    },
+    ebay: {
+        enabled: process.env.EBAY_AFFILIATE_ENABLED === 'true',
+        campaignId: process.env.EBAY_CAMPAIGN_ID || 'your-campaign-id',
+        domains: ['ebay.com', 'ebay.co.uk', 'ebay.ca', 'ebay.de']
+    },
+    walmart: {
+        enabled: process.env.WALMART_AFFILIATE_ENABLED === 'true',
+        publisherId: process.env.WALMART_PUBLISHER_ID || 'your-publisher-id',
+        domains: ['walmart.com']
+    }
+};
+
+// Calculate the cron interval
 function getCronInterval() {
     if (SEARCH_FREQUENCY_MINUTES) {
-        return SEARCH_FREQUENCY_MINUTES * 60 * 1000; // Convert minutes to milliseconds
+        return SEARCH_FREQUENCY_MINUTES * 60 * 1000;
     }
-    return SEARCH_FREQUENCY_HOURS * 60 * 60 * 1000; // Convert hours to milliseconds
+    return SEARCH_FREQUENCY_HOURS * 60 * 60 * 1000;
 }
 
 const CRON_INTERVAL = getCronInterval();
@@ -58,7 +77,7 @@ function validateSearchFrequency() {
 
 const VALIDATED_CRON_INTERVAL = validateSearchFrequency();
 
-// Email configuration - use the shared module
+// Email configuration
 const { transporter, sendDealEmail } = require('./email-utils');
 
 // Validate required environment variables
@@ -90,7 +109,7 @@ const userSchema = new mongoose.Schema({
         frequencyHours: { type: Number, default: 6 },
         notifyOnDeals: { type: Boolean, default: true },
         maxPriceAlerts: { type: Boolean, default: true },
-        quickSearchMode: { type: Boolean, default: true } // New preference for quick search mode
+        quickSearchMode: { type: Boolean, default: true }
     }
 });
 
@@ -114,7 +133,7 @@ const searchPartySchema = new mongoose.Schema({
     preferences: { type: String },
     isActive: { type: Boolean, default: true },
     lastSearched: { type: Date, default: Date.now },
-    searchFrequency: { type: Number, default: null }, // User-specific frequency override
+    searchFrequency: { type: Number, default: null },
     foundResults: [{
         title: String,
         price: Number,
@@ -128,14 +147,32 @@ const searchPartySchema = new mongoose.Schema({
     createdAt: { type: Date, default: Date.now }
 });
 
+// NEW: Click Tracking Schema for Affiliate Analytics
+const clickTrackingSchema = new mongoose.Schema({
+    userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    sessionId: { type: String },
+    productTitle: { type: String, required: true },
+    originalLink: { type: String, required: true },
+    affiliateLink: { type: String, required: true },
+    source: { type: String, required: true },
+    price: { type: Number },
+    searchQuery: { type: String },
+    clicked: { type: Boolean, default: false },
+    clickedAt: { type: Date },
+    userAgent: { type: String },
+    ipAddress: { type: String },
+    createdAt: { type: Date, default: Date.now }
+});
+
 const User = mongoose.model('User', userSchema);
 const Conversation = mongoose.model('Conversation', conversationSchema);
 const SearchParty = mongoose.model('SearchParty', searchPartySchema);
+const ClickTracking = mongoose.model('ClickTracking', clickTrackingSchema);
 
-// Store active sessions in memory (for temporary sessions)
+// Store active sessions in memory
 const activeSessions = new Map();
 
-// Display search frequency configuration
+// Display configuration
 function displaySearchConfiguration() {
     console.log('\n🔍 SEARCH CONFIGURATION:');
     if (SEARCH_FREQUENCY_MINUTES) {
@@ -148,7 +185,115 @@ function displaySearchConfiguration() {
     console.log(`   Next search in: ${VALIDATED_CRON_INTERVAL / (60 * 1000)} minutes\n`);
 }
 
-// Dynamic SYSTEM_PROMPT that includes user information
+function displayAffiliateConfiguration() {
+    console.log('💰 AFFILIATE CONFIGURATION:');
+    console.log(`   Amazon: ${AFFILIATE_CONFIGS.amazon.enabled ? '✅ Enabled' : '❌ Disabled'} ${AFFILIATE_CONFIGS.amazon.enabled ? `(Tag: ${AFFILIATE_CONFIGS.amazon.tag})` : ''}`);
+    console.log(`   eBay: ${AFFILIATE_CONFIGS.ebay.enabled ? '✅ Enabled' : '❌ Disabled'} ${AFFILIATE_CONFIGS.ebay.enabled ? `(Campaign: ${AFFILIATE_CONFIGS.ebay.campaignId})` : ''}`);
+    console.log(`   Walmart: ${AFFILIATE_CONFIGS.walmart.enabled ? '✅ Enabled' : '❌ Disabled'} ${AFFILIATE_CONFIGS.walmart.enabled ? `(Publisher: ${AFFILIATE_CONFIGS.walmart.publisherId})` : ''}`);
+    console.log('');
+}
+
+// Function to add affiliate parameters to links
+function addAffiliateLink(originalLink, source) {
+    if (!originalLink || originalLink === '#') {
+        return originalLink;
+    }
+
+    try {
+        const url = new URL(originalLink);
+        const hostname = url.hostname.replace('www.', '').toLowerCase();
+
+        // Amazon affiliate links
+        if (AFFILIATE_CONFIGS.amazon.enabled && 
+            AFFILIATE_CONFIGS.amazon.domains.some(domain => hostname.includes(domain))) {
+            url.searchParams.set('tag', AFFILIATE_CONFIGS.amazon.tag);
+            console.log(`🔗 Added Amazon affiliate tag to link`);
+            return url.toString();
+        }
+
+        // eBay affiliate links
+        if (AFFILIATE_CONFIGS.ebay.enabled && 
+            AFFILIATE_CONFIGS.ebay.domains.some(domain => hostname.includes(domain))) {
+            url.searchParams.set('mkcid', '1');
+            url.searchParams.set('mkrid', '711-53200-19255-0');
+            url.searchParams.set('siteid', '0');
+            url.searchParams.set('campid', AFFILIATE_CONFIGS.ebay.campaignId);
+            url.searchParams.set('toolid', '10001');
+            console.log(`🔗 Added eBay affiliate parameters to link`);
+            return url.toString();
+        }
+
+        // Walmart affiliate links
+        if (AFFILIATE_CONFIGS.walmart.enabled && 
+            hostname.includes('walmart.com')) {
+            url.searchParams.set('affcampaignid', AFFILIATE_CONFIGS.walmart.publisherId);
+            console.log(`🔗 Added Walmart affiliate parameter to link`);
+            return url.toString();
+        }
+
+        return originalLink;
+    } catch (error) {
+        console.error('Error adding affiliate link:', error);
+        return originalLink;
+    }
+}
+
+// Function to create tracked affiliate link
+async function createTrackedLink(deal, searchQuery, userId = null, sessionId = null) {
+    try {
+        const affiliateLink = addAffiliateLink(deal.link, deal.source);
+        
+        // Save to database for tracking
+        const tracking = new ClickTracking({
+            userId: userId,
+            sessionId: sessionId,
+            productTitle: deal.title,
+            originalLink: deal.link,
+            affiliateLink: affiliateLink,
+            source: deal.source,
+            price: deal.price,
+            searchQuery: searchQuery
+        });
+        
+        await tracking.save();
+        
+        // Return redirect URL through your domain
+        return `/api/redirect/${tracking._id}`;
+    } catch (error) {
+        console.error('Error creating tracked link:', error);
+        return deal.link;
+    }
+}
+
+// Redirect endpoint for affiliate tracking (NO AUTH REQUIRED)
+app.get('/api/redirect/:trackingId', async (req, res) => {
+    try {
+        const { trackingId } = req.params;
+        const tracking = await ClickTracking.findById(trackingId);
+        
+        if (!tracking) {
+            return res.status(404).send('Link not found');
+        }
+        
+        // Mark as clicked and save metadata
+        tracking.clicked = true;
+        tracking.clickedAt = new Date();
+        tracking.userAgent = req.headers['user-agent'];
+        tracking.ipAddress = req.ip || req.connection.remoteAddress;
+        await tracking.save();
+        
+        // Log for analytics
+        console.log(`🎯 AFFILIATE CLICK: "${tracking.productTitle}" - ${tracking.price} - ${tracking.source}`);
+        
+        // Redirect to affiliate link
+        res.redirect(tracking.affiliateLink);
+    } catch (error) {
+        console.error('Redirect error:', error);
+        res.status(500).send('Redirect failed');
+    }
+});
+
+// Dynamic SYSTEM_PROMPT
 const getSystemPrompt = (user) => {
     const basePrompt = `You are "Son of Anton" - a super friendly, upbeat, and enthusiastic shopping assistant with tons of personality! 
 
@@ -188,7 +333,6 @@ You: "SEARCH: laptop deals today" + "Searching for laptops! 💻 Want to specify
 
 This gives them immediate value while keeping the door open for better personalization.`;
 
-    // Add personalized section if user is logged in
     if (user) {
         return `${basePrompt}
 
@@ -354,12 +498,57 @@ app.get('/api/search-config', authenticateToken, async (req, res) => {
                 frequencyMinutes: SEARCH_FREQUENCY_MINUTES,
                 minInterval: MIN_SEARCH_INTERVAL,
                 maxInterval: MAX_SEARCH_INTERVAL,
-                currentInterval: VALIDATED_CRON_INTERVAL / (60 * 60 * 1000) // Convert to hours
+                currentInterval: VALIDATED_CRON_INTERVAL / (60 * 60 * 1000)
             },
             user: userConfig
         });
     } catch (error) {
         console.error('Get search config error:', error);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// Get affiliate statistics (admin endpoint)
+app.get('/api/affiliate/stats', authenticateToken, async (req, res) => {
+    try {
+        if (!req.user) {
+            return res.status(401).json({ error: 'Authentication required' });
+        }
+
+        const totalTrackedLinks = await ClickTracking.countDocuments();
+        const totalClicks = await ClickTracking.countDocuments({ clicked: true });
+        const clickRate = totalTrackedLinks > 0 ? ((totalClicks / totalTrackedLinks) * 100).toFixed(2) : 0;
+
+        const statsBySource = await ClickTracking.aggregate([
+            {
+                $group: {
+                    _id: '$source',
+                    totalClicks: { $sum: { $cond: ['$clicked', 1, 0] } },
+                    totalProducts: { $sum: 1 },
+                    avgPrice: { $avg: '$price' },
+                    lastClick: { $max: '$clickedAt' }
+                }
+            },
+            { $sort: { totalClicks: -1 } }
+        ]);
+
+        const topProducts = await ClickTracking.find({ clicked: true })
+            .sort({ clickedAt: -1 })
+            .limit(10)
+            .select('productTitle price source clickedAt searchQuery');
+
+        res.json({
+            overview: {
+                totalTrackedLinks,
+                totalClicks,
+                clickRate: `${clickRate}%`,
+                potentialRevenue: `Varies by network`
+            },
+            bySource: statsBySource,
+            topProducts: topProducts
+        });
+    } catch (error) {
+        console.error('Stats error:', error);
         res.status(500).json({ error: 'Internal server error' });
     }
 });
@@ -381,17 +570,14 @@ function isProductSearchQuery(message) {
     
     const lowerMessage = message.toLowerCase();
     
-    // Check if message contains search triggers
     const hasSearchTrigger = searchTriggers.some(trigger => 
         lowerMessage.includes(trigger)
     );
     
-    // Check if message contains product categories
     const hasProductCategory = productCategories.some(category =>
         lowerMessage.includes(category)
     );
     
-    // Check for specific product patterns
     const productPatterns = [
         /\d+\s*(inch|gb|tb|mb|ghz)/i,
         /(rtx|gtx)\s*\d+/i,
@@ -409,20 +595,15 @@ function isProductSearchQuery(message) {
 
 // Generate search query from user message
 function generateSearchQuery(message) {
-    const lowerMessage = message.toLowerCase();
-    
-    // Remove common conversational phrases
     const cleanedMessage = message.replace(
         /(can you |please |could you |i |want to |looking to |need to )?(find|search for|look for|get|buy|purchase)?\s*/gi, 
         ''
     ).trim();
     
-    // Add "deals" or "best price" for better shopping results
     if (cleanedMessage.length > 0) {
         return `${cleanedMessage} deals today`;
     }
     
-    // Fallback to original message with shopping context
     return `${message} shopping deals`;
 }
 
@@ -441,7 +622,6 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
         let conversationHistory = [];
         let conversationDoc = null;
 
-        // Get conversation history from DB if user is logged in
         if (user) {
             conversationDoc = await Conversation.findOne({ userId: user._id, sessionId: session });
             if (conversationDoc) {
@@ -451,20 +631,17 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
                 }));
             }
         } else {
-            // Use in-memory session for guests
             if (!activeSessions.has(session)) {
                 activeSessions.set(session, []);
             }
             conversationHistory = activeSessions.get(session) || [];
         }
 
-        // Add user message to history (for Gemini API format)
         conversationHistory.push({
             role: 'user',
             parts: [{ text: message }]
         });
 
-        // Save user message to DB
         if (user) {
             const userMessage = { role: 'user', content: message };
             if (!conversationDoc) {
@@ -480,10 +657,8 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
             await conversationDoc.save();
         }
 
-        // Get personalized system prompt
         const systemPrompt = getSystemPrompt(user);
 
-        // Call Gemini API with system prompt as first user message
         const response = await axios.post(
             `${GEMINI_URL}?key=${GOOGLE_API_KEY}`,
             {
@@ -507,24 +682,19 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
         );
 
         let aiResponse = response.data.candidates[0].content.parts[0].text;
-        
-        // Clean up excessive asterisks (***) to proper markdown (**)
         aiResponse = aiResponse.replace(/\*\*\*/g, '**');
         
-        // Add AI response to history (for next API call)
         conversationHistory.push({
             role: 'model',
             parts: [{ text: aiResponse }]
         });
 
-        // Save AI response to DB
         if (user && conversationDoc) {
             const assistantMessage = { role: 'model', content: aiResponse };
             conversationDoc.messages.push(assistantMessage);
             conversationDoc.updatedAt = new Date();
             await conversationDoc.save();
         } else if (!user) {
-            // Update in-memory session for guests
             activeSessions.set(session, conversationHistory);
         }
 
@@ -579,7 +749,6 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
             const partyData = aiResponse.split('SEARCH_PARTY:')[1].trim().split('|');
             const itemName = partyData[0]?.trim();
             
-            // Parse maxPrice safely
             let maxPrice = null;
             if (partyData[1]) {
                 const priceStr = partyData[1].trim().replace(/[$,]/g, '');
@@ -591,7 +760,6 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
             
             const preferences = partyData[2]?.trim() || '';
             
-            // Parse frequency (default to user preference if not specified)
             let frequency = user.searchPreferences.frequencyHours;
             if (partyData[3]) {
                 const freqStr = partyData[3].trim();
@@ -612,7 +780,7 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
                 });
                 await searchParty.save();
 
-                const priceMsg = maxPrice ? ` under $${maxPrice}` : '';
+                const priceMsg = maxPrice ? ` under ${maxPrice}` : '';
                 const frequencyMsg = ` (searches every ${frequency} hours)`;
                 
                 return res.json({
@@ -623,20 +791,18 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
             }
         }
 
-        // NEW: Check if this is a product search query and AI didn't trigger search
+        // Check if this is a product search query
         const shouldSearch = isProductSearchQuery(message) && !aiResponse.includes('SEARCH:');
         
         if (shouldSearch) {
             const searchQuery = generateSearchQuery(message);
             const displayMessage = `Searching for "${searchQuery}"... 🔍\n\nHere are some quick results! Want to specify your budget, brand, or other preferences for more tailored options?`;
             
-            // Check user preference for quick search mode
             const useQuickSearch = user ? user.searchPreferences.quickSearchMode : true;
 
             if (useQuickSearch) {
-                // Perform search
                 const searchResults = await searchItem(searchQuery);
-                const { deals, totalValid } = findBestDeals(searchResults);
+                const { deals, totalValid } = await findBestDeals(searchResults, searchQuery, user?._id, session);
 
                 if (deals && deals.length > 0) {
                     const recommendation = await getAIRecommendation(deals, searchQuery, user);
@@ -647,7 +813,7 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
                         type: 'recommendation',
                         message: displayMessage,
                         searchQuery,
-                        deals: deals.slice(0, 4),
+                        deals: deals.slice(0, 6),
                         recommendation: recommendationData,
                         quickSearch: true
                     });
@@ -666,9 +832,8 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
             const searchQuery = aiResponse.split('SEARCH:')[1].trim();
             const displayMessage = aiResponse.split('SEARCH:')[0].trim() || `Searching for "${searchQuery}"... 🔍`;
 
-            // Perform search
             const searchResults = await searchItem(searchQuery);
-            const { deals, totalValid } = findBestDeals(searchResults);
+            const { deals, totalValid } = await findBestDeals(searchResults, searchQuery, user?._id, session);
 
             if (deals && deals.length > 0) {
                 const recommendation = await getAIRecommendation(deals, searchQuery, user);
@@ -679,7 +844,7 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
                     type: 'recommendation',
                     message: formatDisplayMessage(displayMessage),
                     searchQuery,
-                    deals: deals.slice(0, 4),
+                    deals: deals.slice(0, 6),
                     recommendation: recommendationData
                 });
             } else {
@@ -896,8 +1061,8 @@ async function searchItem(itemName) {
     }
 }
 
-// Find best deals
-function findBestDeals(results) {
+// Find best deals with affiliate tracking
+async function findBestDeals(results, searchQuery = '', userId = null, sessionId = null) {
     if (!results || !results.shopping_results) {
         return { deals: null, totalValid: null };
     }
@@ -908,23 +1073,32 @@ function findBestDeals(results) {
     for (const item of shoppingResults) {
         if (!item.price) continue;
 
-        // Extract price number robustly
         const priceStr = (typeof item.price === 'string') ? item.price.replace(/[$,]/g, '') : ('' + item.price);
         const price = parseFloat(priceStr);
 
         if (isNaN(price)) continue;
 
-        // Try common image fields SerpApi may return for shopping results
         const imageUrl = item.thumbnail || item.image || (item.images && item.images[0] && item.images[0].src) || (item.product && item.product.thumbnail) || null;
-
-        validResults.push({
+        const originalLink = item.link || item.url || (item.product && item.product.link) || '#';
+        const source = item.source || item.merchant || item.store || 'Unknown';
+        
+        // Create deal object
+        const deal = {
             title: item.title || 'Unknown',
             price: price,
-            source: item.source || item.merchant || item.store || 'Unknown',
-            link: item.link || item.url || (item.product && item.product.link) || '#',
+            source: source,
+            link: originalLink,
             image: imageUrl,
             rating: item.rating || 'N/A',
             reviews: item.reviews || 'N/A'
+        };
+
+        // Create tracked affiliate link
+        const trackedLink = await createTrackedLink(deal, searchQuery, userId, sessionId);
+
+        validResults.push({
+            ...deal,
+            link: trackedLink // Use tracked link instead of direct link
         });
     }
 
@@ -932,7 +1106,6 @@ function findBestDeals(results) {
         return { deals: null, totalValid: null };
     }
 
-    // Sort by price (lowest first)
     validResults.sort((a, b) => a.price - b.price);
 
     return {
@@ -941,10 +1114,10 @@ function findBestDeals(results) {
     };
 }
 
-// Get AI recommendation (updated to include user info)
+// Get AI recommendation
 async function getAIRecommendation(deals, searchQuery, user) {
     const dealsText = deals.map((deal, index) => 
-        `${index + 1}. ${deal.title} - $${deal.price.toFixed(2)} from ${deal.source}${deal.rating !== 'N/A' ? ` (Rating: ${deal.rating}, ${deal.reviews} reviews)` : ''}`
+        `${index + 1}. ${deal.title} - ${deal.price.toFixed(2)} from ${deal.source}${deal.rating !== 'N/A' ? ` (Rating: ${deal.rating}, ${deal.reviews} reviews)` : ''}`
     ).join('\n');
 
     const userContext = user ? `\n\nYou're making this recommendation for ${user.username}. Make it personal and friendly!` : '';
@@ -1046,6 +1219,11 @@ app.get('/api/health', (req, res) => {
                 `${SEARCH_FREQUENCY_MINUTES} minutes` : 
                 `${SEARCH_FREQUENCY_HOURS} hours`,
             nextRunIn: `${VALIDATED_CRON_INTERVAL / (60 * 1000)} minutes`
+        },
+        affiliateConfig: {
+            amazon: AFFILIATE_CONFIGS.amazon.enabled,
+            ebay: AFFILIATE_CONFIGS.ebay.enabled,
+            walmart: AFFILIATE_CONFIGS.walmart.enabled
         }
     });
 });
@@ -1053,13 +1231,12 @@ app.get('/api/health', (req, res) => {
 // Search Party Cron Job
 async function runSearchParties() {
     try {
-        console.log('🕒 CRON JOB: Starting Search Party execution...');
+        console.log('🕐 CRON JOB: Starting Search Party execution...');
         
         const activeParties = await SearchParty.find({ isActive: true });
         
         console.log(`🔍 CRON JOB: Found ${activeParties.length} active search parties`);
         
-        // Log all active search parties
         if (activeParties.length > 0) {
             console.log('📋 ACTIVE SEARCH PARTIES:');
             activeParties.forEach((party, index) => {
@@ -1071,11 +1248,9 @@ async function runSearchParties() {
         }
         
         for (const party of activeParties) {
-            // Use user-specific frequency if set, otherwise use system default
             const userFrequencyHours = party.searchFrequency || SEARCH_FREQUENCY_HOURS;
             const userFrequencyMs = userFrequencyHours * 60 * 60 * 1000;
             
-            // Only search based on user's preferred frequency
             const timeSinceLastSearch = Date.now() - party.lastSearched.getTime();
             
             if (timeSinceLastSearch < userFrequencyMs) {
@@ -1087,10 +1262,9 @@ async function runSearchParties() {
             console.log(`🔎 Searching for: "${party.itemName}" (User: ${party.userId}, Frequency: ${userFrequencyHours}h)`);
             
             const results = await searchItem(party.searchQuery);
-            const { deals } = findBestDeals(results);
+            const { deals } = await findBestDeals(results, party.searchQuery, party.userId, null);
 
             if (deals && deals.length > 0) {
-                // Filter by max price if set
                 const filteredDeals = party.maxPrice 
                     ? deals.filter(deal => deal.price <= party.maxPrice)
                     : deals;
@@ -1098,11 +1272,9 @@ async function runSearchParties() {
                 console.log(`   Found ${deals.length} total deals, ${filteredDeals.length} after price filtering`);
 
                 if (filteredDeals.length > 0) {
-                    // Get user info for email
                     const user = await User.findById(party.userId);
                     
                     if (user && user.searchPreferences.notifyOnDeals) {
-                        // Send email notification
                         const emailSent = await sendDealEmail(user, party, filteredDeals.slice(0, 3));
                         
                         if (emailSent) {
@@ -1116,7 +1288,6 @@ async function runSearchParties() {
                         console.log(`📧 Email notifications disabled for user ${user.email}`);
                     }
 
-                    // Add new results to database
                     const newResults = filteredDeals.slice(0, 3).map(deal => ({
                         title: deal.title,
                         price: deal.price,
@@ -1140,7 +1311,6 @@ async function runSearchParties() {
                 console.log(`❌ No deals found for "${party.itemName}"`);
             }
 
-            // Prevent API rate limiting
             await new Promise(resolve => setTimeout(resolve, 2000));
         }
         
@@ -1156,13 +1326,16 @@ module.exports = {
     searchItem,
     findBestDeals,
     getAIRecommendation,
-    parseRecommendation
+    parseRecommendation,
+    addAffiliateLink,
+    createTrackedLink
 };
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log(`🚀 Son of Anton API running on port ${PORT}`);
     displaySearchConfiguration();
+    displayAffiliateConfiguration();
     console.log(`📡 Endpoints:`);
     console.log(`   POST /api/register - Create account`);
     console.log(`   POST /api/login - Login`);
@@ -1175,6 +1348,8 @@ app.listen(PORT, () => {
     console.log(`   DELETE /api/search-parties/:id - Delete search party`);
     console.log(`   PUT /api/user/preferences - Update user preferences`);
     console.log(`   GET /api/search-config - Get search configuration`);
+    console.log(`   GET /api/redirect/:trackingId - Affiliate redirect (with tracking)`);
+    console.log(`   GET /api/affiliate/stats - Get affiliate statistics`);
     console.log(`   POST /api/reset - Reset conversation`);
     console.log(`   GET /api/health - Health check`);
 });
@@ -1187,7 +1362,7 @@ setInterval(() => {
     runSearchParties();
 }, VALIDATED_CRON_INTERVAL);
 
-// Run immediately on startup to show current state
+// Run immediately on startup
 setTimeout(() => {
     console.log(`\n🚀 INITIAL CRON JOB: Running initial Search Party check at ${new Date().toISOString()}`);
     runSearchParties();

@@ -8,8 +8,19 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 
 const app = express();
+
+const corsOptions = {
+  origin: [
+    'https://son-of-anton-chat.vercel.app',
+    'http://localhost:3000', // Keep for local development
+    'http://localhost:5173', // Common frontend dev server port
+  ],
+  credentials: true,
+  optionsSuccessStatus: 200
+};
+
 app.use(express.json());
-app.use(cors());
+app.use(cors(corsOptions));
 
 // Load API keys and configuration from environment variables
 const SERP_API_KEY = process.env.SERP_API_KEY;

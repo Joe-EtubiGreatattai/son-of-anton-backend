@@ -63,8 +63,8 @@ function escapeAttr(str) {
 // Build HTML email - cleaner UI, responsive cards, CTA buttons, plain-text fallback
 function buildEmailHtml({ user, searchParty, deals }) {
   const itemName = escapeHtml(searchParty.itemName || 'your item');
-  const priceFilter = searchParty.maxPrice ? `<div style="font-size:14px;color:#555;margin-top:6px;"><strong>Max Price:</strong> $${escapeHtml(searchParty.maxPrice)}</div>` : '';
-  const preferences = searchParty.preferences ? `<div style="font-size:14px;color:#555;margin-top:6px;"><strong>Preferences:</strong> ${escapeHtml(searchParty.preferences)}</div>` : '';
+  const priceFilter = searchParty.maxPrice ? `<div style="font-size:14px;color:#666;margin-top:4px;"><strong>Max Price:</strong> $${escapeHtml(searchParty.maxPrice)}</div>` : '';
+  const preferences = searchParty.preferences ? `<div style="font-size:14px;color:#666;margin-top:4px;"><strong>Preferences:</strong> ${escapeHtml(searchParty.preferences)}</div>` : '';
 
   const dealCards = (deals && deals.length)
     ? deals.map(d => {
@@ -73,40 +73,36 @@ function buildEmailHtml({ user, searchParty, deals }) {
         const source = escapeHtml(d.source || 'Seller');
         const link = escapeAttr(d.link || '#');
         const image = escapeAttr(d.image || '');
-        const rating = d.rating && d.reviews ? `${escapeHtml(d.rating)} • ${escapeHtml(d.reviews)} reviews` : '';
+        const rating = d.rating && d.reviews ? `<div style="font-size:13px;color:#888;margin-top:6px;display:flex;align-items:center;gap:4px;"><span style="color:#f59e0b;">★</span> ${escapeHtml(d.rating)} • ${escapeHtml(d.reviews)} reviews</div>` : '';
 
         return `
-          <td style="padding:12px;vertical-align:top;width:50%;">
-            <div style="border-radius:12px;overflow:hidden;border:1px solid #e6e9ef;background:#fff;">
-              <div style="min-height:120px;display:flex;align-items:center;justify-content:center;background:#fafbff;">
-                ${image ? `<img src="${image}" alt="${title}" style="max-width:100%;max-height:120px;object-fit:contain;">` : `<div style="width:100%;height:120px;display:flex;align-items:center;justify-content:center;color:#999;">No image</div>`}
-              </div>
-              <div style="padding:12px 14px;">
-                <div style="font-weight:600;font-size:15px;margin-bottom:6px;"><a href="${link}" target="_blank" rel="noopener noreferrer" style="color:#0b63d6;text-decoration:none;">${title}</a></div>
-                <div style="color:#111;font-weight:700;font-size:16px;margin-bottom:8px;">${price} <span style="font-size:13px;color:#666;font-weight:500">• ${source}</span></div>
-                <div style="font-size:13px;color:#666;margin-bottom:10px;">${rating}</div>
-                <div style="text-align:right;"><a href="${link}" target="_blank" rel="noopener noreferrer" style="display:inline-block;padding:8px 12px;border-radius:8px;background:#0b63d6;color:#fff;text-decoration:none;font-size:14px;">View Deal</a></div>
-              </div>
-            </div>
-          </td>
+          <div style="background:#fff;border-radius:12px;overflow:hidden;margin-bottom:16px;border:1px solid #e5e7eb;box-shadow:0 1px 3px rgba(0,0,0,0.05);">
+            <table role="presentation" width="100%" style="border-collapse:collapse;">
+              <tr>
+                <td style="width:180px;padding:16px;vertical-align:top;border-right:1px solid #f3f4f6;">
+                  <div style="background:#f9fafb;border-radius:8px;padding:12px;display:flex;align-items:center;justify-content:center;min-height:140px;">
+                    ${image ? `<img src="${image}" alt="${title}" style="max-width:100%;max-height:140px;object-fit:contain;display:block;">` : `<div style="color:#d1d5db;font-size:14px;text-align:center;">No image<br>available</div>`}
+                  </div>
+                </td>
+                <td style="padding:16px;vertical-align:top;">
+                  <div style="margin-bottom:8px;">
+                    <a href="${link}" target="_blank" rel="noopener noreferrer" style="color:#111827;text-decoration:none;font-size:16px;font-weight:600;line-height:1.4;display:block;">${title}</a>
+                  </div>
+                  <div style="display:flex;align-items:baseline;gap:8px;margin-bottom:4px;">
+                    <span style="font-size:24px;font-weight:700;color:#059669;">${price}</span>
+                    <span style="font-size:14px;color:#6b7280;">from ${source}</span>
+                  </div>
+                  ${rating}
+                  <div style="margin-top:14px;">
+                    <a href="${link}" target="_blank" rel="noopener noreferrer" style="display:inline-block;padding:10px 20px;background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);color:#fff;text-decoration:none;border-radius:8px;font-weight:600;font-size:14px;box-shadow:0 2px 4px rgba(102,126,234,0.3);">View Deal →</a>
+                  </div>
+                </td>
+              </tr>
+            </table>
+          </div>
         `;
       }).join('')
-    : `<tr><td>No deals found.</td></tr>`;
-
-  // Two-column grid: wrap every 2 items in a row
-  let gridHtml = '';
-  if (deals && deals.length) {
-    for (let i = 0; i < deals.length; i += 2) {
-      const left = deals[i];
-      const right = deals[i + 1];
-      const leftCard = dealCards.split('</td>')[i] ? '' : ''; // placeholder (we'll build using mapping above)
-      gridHtml += `<tr>${dealCards.split('</td>').slice(i*1, i*1+2).join('</td>')}</tr>`;
-    }
-    // Simpler: render all cards inside a single row with table; above mapping already produces <td> fragments, so just wrap:
-    gridHtml = `<tr>${dealCards}</tr>`;
-  } else {
-    gridHtml = `<tr><td style="padding:12px;color:#666;">No deals matched your criteria.</td></tr>`;
-  }
+    : `<div style="padding:24px;text-align:center;color:#9ca3af;background:#f9fafb;border-radius:8px;border:1px dashed #e5e7eb;">No deals found matching your criteria.</div>`;
 
   // Final HTML
   return `
@@ -116,47 +112,60 @@ function buildEmailHtml({ user, searchParty, deals }) {
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width,initial-scale=1">
   </head>
-  <body style="margin:0;padding:0;background:#f4f6fb;font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#111;">
+  <body style="margin:0;padding:0;background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;color:#111827;">
     <center style="width:100%;table-layout:fixed;">
-      <div style="max-width:700px;margin:28px auto;">
-        <table role="presentation" width="100%" style="border-collapse:collapse;">
-          <tr>
-            <td style="background:linear-gradient(90deg,#667eea,#764ba2);padding:28px;border-radius:12px 12px 0 0;color:#fff;text-align:center;">
-              <h1 style="margin:0;font-size:22px;">Search Party — Deals found for <span style="white-space:nowrap">${itemName}</span></h1>
-              <div style="margin-top:8px;font-size:14px;opacity:0.95;">Sent by ${escapeHtml(FROM_NAME)}</div>
-            </td>
-          </tr>
+      <div style="max-width:680px;margin:32px auto;">
+        <!-- Header -->
+        <div style="background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);padding:32px 24px;border-radius:16px 16px 0 0;text-align:center;box-shadow:0 4px 6px rgba(0,0,0,0.1);">
+          <div style="font-size:28px;font-weight:700;color:#fff;margin-bottom:8px;">🎯 Deals Found!</div>
+          <div style="font-size:18px;color:rgba(255,255,255,0.95);font-weight:500;">${itemName}</div>
+          <div style="margin-top:12px;font-size:13px;color:rgba(255,255,255,0.8);">Sent by ${escapeHtml(FROM_NAME)}</div>
+        </div>
 
-          <tr>
-            <td style="background:#fff;padding:22px;border:1px solid #e9edf5;border-top:none;border-radius:0 0 12px 12px;">
-              <p style="margin:0 0 12px 0;font-size:15px;">Hi ${escapeHtml(user.username || 'there')}, I found the latest matches for <strong>${itemName}</strong>.</p>
+        <!-- Main Content -->
+        <div style="background:#fff;padding:32px 24px;border-radius:0 0 16px 16px;box-shadow:0 4px 6px rgba(0,0,0,0.05);">
+          <p style="margin:0 0 20px 0;font-size:16px;color:#374151;line-height:1.6;">Hi <strong>${escapeHtml(user.username || 'there')}</strong>,</p>
+          <p style="margin:0 0 24px 0;font-size:16px;color:#374151;line-height:1.6;">I found the latest deals for <strong>${itemName}</strong>. Here's what matches your search:</p>
 
-              <div style="background:#f7f9ff;padding:12px;border-radius:8px;margin-bottom:16px;border:1px solid #eef2ff;">
-                <div style="font-weight:600;color:#333;margin-bottom:6px;">Search details</div>
-                <div style="font-size:14px;color:#555;">${escapeHtml(searchParty.itemName || '')}${priceFilter}${preferences}</div>
-              </div>
+          <!-- Search Details -->
+          <div style="background:linear-gradient(135deg,#f0f9ff 0%,#e0f2fe 100%);padding:16px 20px;border-radius:10px;margin-bottom:28px;border-left:4px solid #0ea5e9;">
+            <div style="font-weight:700;color:#0c4a6e;margin-bottom:8px;font-size:15px;">📋 Search Details</div>
+            <div style="font-size:14px;color:#0c4a6e;line-height:1.6;">
+              <strong>Item:</strong> ${escapeHtml(searchParty.itemName || '')}
+              ${priceFilter}
+              ${preferences}
+            </div>
+          </div>
 
-              <table role="presentation" width="100%" style="border-collapse:separate;border-spacing:12px 12px;">
-                ${gridHtml}
-              </table>
+          <!-- Deals Section -->
+          <div style="margin-bottom:28px;">
+            <div style="font-size:18px;font-weight:700;color:#111827;margin-bottom:16px;">🛍️ Top Deals</div>
+            ${dealCards}
+          </div>
 
-              <div style="margin-top:18px;padding:14px;border-radius:8px;background:#fff8e6;border-left:4px solid #ffd966;">
-                <div style="font-weight:600;color:#8a6d00;margin-bottom:6px;">Tip</div>
-                <div style="font-size:14px;color:#5e4b00;">Prices change fast — click the "View Deal" button to claim a price. If you'd like, I can auto-monitor this item more frequently.</div>
-              </div>
+          <!-- Tip Box -->
+          <div style="background:#fffbeb;padding:16px 20px;border-radius:10px;border-left:4px solid #f59e0b;margin-bottom:24px;">
+            <div style="font-weight:700;color:#92400e;margin-bottom:6px;font-size:15px;">💡 Pro Tip</div>
+            <div style="font-size:14px;color:#78350f;line-height:1.6;">Prices can change quickly! Click "View Deal" to lock in these prices. Want more frequent updates? Enable auto-monitoring in your account.</div>
+          </div>
 
-              <div style="margin-top:18px;text-align:center;">
-                <a href="#" style="display:inline-block;padding:10px 16px;border-radius:10px;background:#667eea;color:#fff;text-decoration:none;font-weight:600;">Open app</a>
-              </div>
+          <!-- CTA Button -->
+          <div style="text-align:center;margin-bottom:24px;">
+            <a href="#" style="display:inline-block;padding:14px 32px;background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);color:#fff;text-decoration:none;border-radius:10px;font-weight:700;font-size:16px;box-shadow:0 4px 6px rgba(102,126,234,0.4);">Open Dashboard</a>
+          </div>
 
-              <div style="margin-top:18px;font-size:12px;color:#888;text-align:center;">
-                You received this email because you set up a Search Party. Manage notifications in your account.
-              </div>
-            </td>
-          </tr>
-        </table>
+          <!-- Footer Note -->
+          <div style="text-align:center;font-size:13px;color:#9ca3af;line-height:1.5;padding-top:20px;border-top:1px solid #e5e7eb;">
+            You received this email because you created a Search Party.<br>
+            Manage your notifications in your account settings.
+          </div>
+        </div>
 
-        <div style="text-align:center;margin-top:14px;color:#999;font-size:12px;">Happy shopping — Son of Anton 🛍️</div>
+        <!-- Email Footer -->
+        <div style="text-align:center;margin-top:20px;color:#9ca3af;font-size:13px;">
+          Happy shopping! 🛒<br>
+          <strong style="color:#6b7280;">${escapeHtml(FROM_NAME)}</strong>
+        </div>
       </div>
     </center>
   </body>

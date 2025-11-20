@@ -26,22 +26,31 @@ app.use(cors(corsOptions));
 // Load API keys and configuration from environment variables
 const SERP_API_KEY = process.env.SERP_API_KEY;
 const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY;
-const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key';
-const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/sonofanton';
+const JWT_SECRET = process.env.JWT_SECRET || 'your_jwt_secret';
+
+// Base URL for SerpAPI
 const SERP_BASE_URL = 'https://serpapi.com/search';
-const GEMINI_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent';
+
+// Gemini configuration
+const GEMINI_MODEL = 'models/gemini-2.5-pro'; // stable, supports generateContent
+const GEMINI_URL = `https://generativelanguage.googleapis.com/v1/${GEMINI_MODEL}:generateContent`;
+
+
+
+// MongoDB connection
+const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/chat_app';
 
 // Search frequency configuration
-const SEARCH_FREQUENCY_HOURS = parseInt(process.env.SEARCH_FREQUENCY_HOURS) || 6;
-const SEARCH_FREQUENCY_MINUTES = parseInt(process.env.SEARCH_FREQUENCY_MINUTES) || null;
-const MIN_SEARCH_INTERVAL = 0.0667;
-const MAX_SEARCH_INTERVAL = 24 * 7;
+const SEARCH_FREQUENCY_HOURS = parseInt(process.env.SEARCH_FREQUENCY_HOURS, 10) || null;
+const SEARCH_FREQUENCY_MINUTES = parseInt(process.env.SEARCH_FREQUENCY_MINUTES, 10) || 10;
 
 // Affiliate configuration
 const AFFILIATE_CONFIGS = {
     amazon: {
-        enabled: process.env.AMAZON_AFFILIATE_ENABLED === 'true',
-        tag: process.env.AMAZON_AFFILIATE_TAG || 'your-tag-20',
+        // Amazon is ON by default – only turn off by explicitly setting AMAZON_AFFILIATE_ENABLED=false
+        enabled: process.env.AMAZON_AFFILIATE_ENABLED === 'false' ? false : true,
+        // Your affiliate code as the default tag
+        tag: process.env.AMAZON_AFFILIATE_TAG || 'sagato-20',
         domains: ['amazon.com', 'amazon.co.uk', 'amazon.ca', 'amazon.de', 'amazon.fr', 'amzn.to']
     },
     ebay: {
@@ -56,6 +65,32 @@ const AFFILIATE_CONFIGS = {
     }
 };
 
+// Amazon Product Advertising API (PA-API) setup
+let ProductAdvertisingAPIv1 = null;
+let amazonApi = null;
+let AMAZON_API_ENABLED = false;
+
+try {
+    ProductAdvertisingAPIv1 = require('paapi5-nodejs-sdk');
+
+    const defaultClient = ProductAdvertisingAPIv1.ApiClient.instance;
+    defaultClient.accessKey = process.env.AMAZON_PAAPI_ACCESS_KEY || '';
+    defaultClient.secretKey = process.env.AMAZON_PAAPI_SECRET_KEY || '';
+    defaultClient.host = process.env.AMAZON_PAAPI_HOST || 'webservices.amazon.com';
+    defaultClient.region = process.env.AMAZON_PAAPI_REGION || 'us-east-1';
+
+    amazonApi = new ProductAdvertisingAPIv1.DefaultApi();
+    AMAZON_API_ENABLED = !!(defaultClient.accessKey && defaultClient.secretKey);
+
+    if (!AMAZON_API_ENABLED) {
+        console.warn('⚠️ Amazon PA-API credentials not set. Set AMAZON_PAAPI_ACCESS_KEY and AMAZON_PAAPI_SECRET_KEY to enable direct Amazon search.');
+    } else {
+        console.log('✅ Amazon PA-API client configured.');
+    }
+} catch (error) {
+    console.warn('⚠️ Amazon PA-API SDK not installed. Run "npm install paapi5-nodejs-sdk" to enable direct Amazon search.');
+}
+
 // Calculate the cron interval
 function getCronInterval() {
     if (SEARCH_FREQUENCY_MINUTES) {
@@ -68,505 +103,387 @@ const CRON_INTERVAL = getCronInterval();
 
 // Validate search frequency
 function validateSearchFrequency() {
-    let frequencyHours = SEARCH_FREQUENCY_HOURS;
-
-    if (SEARCH_FREQUENCY_MINUTES) {
-        frequencyHours = SEARCH_FREQUENCY_MINUTES / 60;
+    if (!SEARCH_FREQUENCY_HOURS && !SEARCH_FREQUENCY_MINUTES) {
+        console.error("❌ ERROR: SEARCH_FREQUENCY_HOURS or SEARCH_FREQUENCY_MINUTES environment variable is NOT set.");
+        console.error("   Please set either one appropriately in your environment:");
+        console.error("   - SEARCH_FREQUENCY_HOURS: number of hours between each search (e.g., 6 for every 6 hours).");
+        console.error("   - SEARCH_FREQUENCY_MINUTES: number of minutes between each search (e.g., 30 for every 30 minutes).");
+        console.error("   Without this configuration, the scheduled search job cannot be started.");
+        return false;
     }
 
-    if (frequencyHours < MIN_SEARCH_INTERVAL) {
-        console.warn(`⚠️  Search frequency (${frequencyHours}h) is below minimum (${MIN_SEARCH_INTERVAL}h). Using minimum frequency.`);
-        return MIN_SEARCH_INTERVAL * 60 * 60 * 1000;
+    if (SEARCH_FREQUENCY_HOURS && SEARCH_FREQUENCY_MINUTES) {
+        console.warn("⚠️ WARNING: Both SEARCH_FREQUENCY_HOURS and SEARCH_FREQUENCY_MINUTES are set.");
+        console.warn("   SEARCH_FREQUENCY_MINUTES will take precedence over SEARCH_FREQUENCY_HOURS.");
     }
 
-    if (frequencyHours > MAX_SEARCH_INTERVAL) {
-        console.warn(`⚠️  Search frequency (${frequencyHours}h) exceeds maximum (${MAX_SEARCH_INTERVAL}h). Using maximum frequency.`);
-        return MAX_SEARCH_INTERVAL * 60 * 60 * 1000;
+    if (SEARCH_FREQUENCY_HOURS && SEARCH_FREQUENCY_HOURS <= 0) {
+        console.error("❌ ERROR: SEARCH_FREQUENCY_HOURS must be a positive number.");
+        return false;
     }
 
-    return CRON_INTERVAL;
+    if (SEARCH_FREQUENCY_MINUTES && SEARCH_FREQUENCY_MINUTES <= 0) {
+        console.error("❌ ERROR: SEARCH_FREQUENCY_MINUTES must be a positive number.");
+        return false;
+    }
+
+    console.log(`✅ Search frequency validated. Running every ${SEARCH_FREQUENCY_MINUTES || (SEARCH_FREQUENCY_HOURS * 60)} minutes.`);
+    return true;
 }
 
-const VALIDATED_CRON_INTERVAL = validateSearchFrequency();
+// Validate on startup
+validateSearchFrequency();
 
-// Email configuration
-const { transporter, sendDealEmail } = require('./email-utils');
+// Connect to MongoDB
+mongoose.connect(MONGO_URI, {
+    useNewUrlParser: true,
+    useUnifiedTopology: true,
+})
+    .then(() => console.log('MongoDB connected'))
+    .catch((err) => console.error('MongoDB connection error:', err));
 
-// Validate required environment variables
-if (!SERP_API_KEY) {
-    console.error('❌ ERROR: SERP_API_KEY is not set in environment variables');
-    process.exit(1);
-}
-
-if (!GOOGLE_API_KEY) {
-    console.error('❌ ERROR: GOOGLE_API_KEY is not set in environment variables');
-    process.exit(1);
-}
-
-// MongoDB connection
-mongoose.connect(MONGODB_URI)
-    .then(() => console.log('✅ Connected to MongoDB'))
-    .catch(err => {
-        console.error('❌ MongoDB connection error:', err);
-        process.exit(1);
-    });
-
-// MongoDB Schemas
+// User Schema and Model
 const userSchema = new mongoose.Schema({
-    username: { type: String, required: true, unique: true },
+    username: { type: String },
     email: { type: String, required: true, unique: true },
-    password: { type: String, required: true },
-    createdAt: { type: Date, default: Date.now },
+    password: { type: String },
+    preferences: {
+        budget: { type: Number, default: null },
+        favoriteStores: { type: [String], default: [] },
+        dislikedStores: { type: [String], default: [] },
+        categories: { type: [String], default: [] },
+        shoppingStyle: {
+            type: String,
+            enum: ['Best Deal', 'Fast Shipping', 'Trusted Brands', 'Balanced', 'Quality First'],
+            default: 'Balanced',
+        },
+    },
     searchPreferences: {
-        frequencyHours: { type: Number, default: 6 },
-        notifyOnDeals: { type: Boolean, default: true },
-        maxPriceAlerts: { type: Boolean, default: true },
-        quickSearchMode: { type: Boolean, default: true }
-    }
-});
-
-const conversationSchema = new mongoose.Schema({
-    userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-    sessionId: { type: String, required: true },
-    messages: [{
-        role: { type: String, enum: ['user', 'model'], required: true },
-        content: { type: String, required: true },
-        timestamp: { type: Date, default: Date.now }
-    }],
+        quickSearchMode: { type: Boolean, default: true },
+        minPrice: { type: Number, default: 0 },
+        maxPrice: { type: Number, default: null },
+        preferredStores: { type: [String], default: [] },
+        avoidStores: { type: [String], default: [] },
+        resultLimit: { type: Number, default: 10 },
+        autoSearchOnOpen: { type: Boolean, default: true }
+    },
     createdAt: { type: Date, default: Date.now },
-    updatedAt: { type: Date, default: Date.now }
 });
 
-const searchPartySchema = new mongoose.Schema({
+// Model
+const User = mongoose.model('User', userSchema);
+
+// Party Schema and Model (Scheduled Search Configuration)
+const partySchema = new mongoose.Schema({
     userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     itemName: { type: String, required: true },
     searchQuery: { type: String, required: true },
-    maxPrice: { type: Number },
-    preferences: { type: String },
-    isActive: { type: Boolean, default: true },
-    lastSearched: { type: Date, default: Date.now },
-    searchFrequency: { type: Number, default: null },
-    foundResults: [{
-        title: String,
-        price: Number,
-        source: String,
-        link: String,
-        image: String,
-        rating: String,
-        reviews: String,
-        foundAt: { type: Date, default: Date.now }
-    }],
-    createdAt: { type: Date, default: Date.now }
+    searchFrequencyHours: { type: Number, default: 12 },
+    aiStyle: { type: String, default: 'Balanced' },
+    stores: { type: [String], default: ['amazon', 'ebay', 'walmart', 'bestbuy'] },
+    maxPrice: { type: Number, default: null },
+    minPrice: { type: Number, default: 0 },
+    active: { type: Boolean, default: true },
+    lastRunAt: { type: Date, default: null },
+    createdAt: { type: Date, default: Date.now },
+    notificationChannel: {
+        type: String,
+        enum: ['in_app', 'email', 'sms'],
+        default: 'in_app'
+    }
 });
 
-// Click Tracking Schema for Affiliate Analytics
+const Party = mongoose.model('Party', partySchema);
+
+// Click Tracking Schema and Model
 const clickTrackingSchema = new mongoose.Schema({
-    userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-    sessionId: { type: String },
+    userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: false },
+    sessionId: { type: String, required: false },
     productTitle: { type: String, required: true },
     originalLink: { type: String, required: true },
-    affiliateLink: { type: String, required: true },
+    affiliateLink: { type: String },
     source: { type: String, required: true },
     price: { type: Number },
     searchQuery: { type: String },
     clicked: { type: Boolean, default: false },
-    clickedAt: { type: Date },
-    userAgent: { type: String },
-    ipAddress: { type: String },
     createdAt: { type: Date, default: Date.now }
 });
 
-// Cart Schema
+const ClickTracking = mongoose.model('ClickTracking', clickTrackingSchema);
+
+// Cart Schema and Model
+const cartItemSchema = new mongoose.Schema({
+    title: { type: String, required: true },
+    source: { type: String, required: true },
+    price: { type: Number, required: true },
+    image: { type: String },
+    link: { type: String, required: true },
+    quantity: { type: Number, default: 1 }
+}, { _id: false });
+
 const cartSchema = new mongoose.Schema({
-    userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-    items: [{
-        productId: { type: String, required: true },
-        title: { type: String, required: true },
-        price: { type: Number, required: true },
-        quantity: { type: Number, default: 1, min: 1 },
-        source: { type: String, required: true },
-        link: { type: String, required: true },
-        image: { type: String },
-        rating: { type: String },
-        reviews: { type: String },
-        inStock: { type: Boolean, default: true },
-        lastStockCheck: { type: Date, default: Date.now },
-        addedAt: { type: Date, default: Date.now }
-    }],
+    userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    sessionId: { type: String },
+    items: [cartItemSchema],
     createdAt: { type: Date, default: Date.now },
     updatedAt: { type: Date, default: Date.now }
 });
 
-// Stock Check History Schema
-const stockCheckSchema = new mongoose.Schema({
-    cartItemId: { type: mongoose.Schema.Types.ObjectId, ref: 'Cart.items' },
-    productTitle: { type: String, required: true },
-    inStock: { type: Boolean, required: true },
-    price: { type: Number },
-    checkedAt: { type: Date, default: Date.now },
-    source: { type: String }
-});
+cartSchema.index({ userId: 1, sessionId: 1 }, { unique: true, sparse: true });
 
-const User = mongoose.model('User', userSchema);
-const Conversation = mongoose.model('Conversation', conversationSchema);
-const SearchParty = mongoose.model('SearchParty', searchPartySchema);
-const ClickTracking = mongoose.model('ClickTracking', clickTrackingSchema);
 const Cart = mongoose.model('Cart', cartSchema);
-const StockCheck = mongoose.model('StockCheck', stockCheckSchema);
 
-// Store active sessions in memory
-const activeSessions = new Map();
-
-// Display configuration
-function displaySearchConfiguration() {
-    console.log('\n🔍 SEARCH CONFIGURATION:');
-    if (SEARCH_FREQUENCY_MINUTES) {
-        console.log(`   Frequency: Every ${SEARCH_FREQUENCY_MINUTES} minutes`);
-    } else {
-        console.log(`   Frequency: Every ${SEARCH_FREQUENCY_HOURS} hours`);
-    }
-    console.log(`   Minimum interval: ${MIN_SEARCH_INTERVAL} hour`);
-    console.log(`   Maximum interval: ${MAX_SEARCH_INTERVAL} hours (1 week)`);
-    console.log(`   Next search in: ${VALIDATED_CRON_INTERVAL / (60 * 1000)} minutes\n`);
-}
-
-function displayAffiliateConfiguration() {
-    console.log('💰 AFFILIATE CONFIGURATION:');
-    console.log(`   Amazon: ${AFFILIATE_CONFIGS.amazon.enabled ? '✅ Enabled' : '❌ Disabled'} ${AFFILIATE_CONFIGS.amazon.enabled ? `(Tag: ${AFFILIATE_CONFIGS.amazon.tag})` : ''}`);
-    console.log(`   eBay: ${AFFILIATE_CONFIGS.ebay.enabled ? '✅ Enabled' : '❌ Disabled'} ${AFFILIATE_CONFIGS.ebay.enabled ? `(Campaign: ${AFFILIATE_CONFIGS.ebay.campaignId})` : ''}`);
-    console.log(`   Walmart: ${AFFILIATE_CONFIGS.walmart.enabled ? '✅ Enabled' : '❌ Disabled'} ${AFFILIATE_CONFIGS.walmart.enabled ? `(Publisher: ${AFFILIATE_CONFIGS.walmart.publisherId})` : ''}`);
-    console.log('');
-}
-
-// Function to add affiliate parameters to links
-function addAffiliateLink(originalLink, source) {
-    if (!originalLink || originalLink === '#') {
-        return originalLink;
-    }
-
-    try {
-        const url = new URL(originalLink);
-        const hostname = url.hostname.replace('www.', '').toLowerCase();
-
-        // Amazon affiliate links
-        if (AFFILIATE_CONFIGS.amazon.enabled &&
-            AFFILIATE_CONFIGS.amazon.domains.some(domain => hostname.includes(domain))) {
-            url.searchParams.set('tag', AFFILIATE_CONFIGS.amazon.tag);
-            console.log(`🔗 Added Amazon affiliate tag to link`);
-            return url.toString();
+// Party Notification Schema and Model
+const partyNotificationSchema = new mongoose.Schema({
+    partyId: { type: mongoose.Schema.Types.ObjectId, ref: 'Party', required: true },
+    userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+    deals: [
+        {
+            title: String,
+            price: Number,
+            source: String,
+            link: String,
+            image: String,
+            rating: String,
+            reviews: String
         }
-
-        // eBay affiliate links
-        if (AFFILIATE_CONFIGS.ebay.enabled &&
-            AFFILIATE_CONFIGS.ebay.domains.some(domain => hostname.includes(domain))) {
-            url.searchParams.set('mkcid', '1');
-            url.searchParams.set('mkrid', '711-53200-19255-0');
-            url.searchParams.set('siteid', '0');
-            url.searchParams.set('campid', AFFILIATE_CONFIGS.ebay.campaignId);
-            url.searchParams.set('toolid', '10001');
-            console.log(`🔗 Added eBay affiliate parameters to link`);
-            return url.toString();
-        }
-
-        // Walmart affiliate links
-        if (AFFILIATE_CONFIGS.walmart.enabled &&
-            hostname.includes('walmart.com')) {
-            url.searchParams.set('affcampaignid', AFFILIATE_CONFIGS.walmart.publisherId);
-            console.log(`🔗 Added Walmart affiliate parameter to link`);
-            return url.toString();
-        }
-
-        return originalLink;
-    } catch (error) {
-        console.error('Error adding affiliate link:', error);
-        return originalLink;
-    }
-}
-
-// Function to create tracked affiliate link
-async function createTrackedLink(deal, searchQuery, userId = null, sessionId = null) {
-    try {
-        const affiliateLink = addAffiliateLink(deal.link, deal.source);
-
-        // Save to database for tracking
-        const tracking = new ClickTracking({
-            userId: userId,
-            sessionId: sessionId,
-            productTitle: deal.title,
-            originalLink: deal.link,
-            affiliateLink: affiliateLink,
-            source: deal.source,
-            price: deal.price,
-            searchQuery: searchQuery
-        });
-
-        await tracking.save();
-
-        // Return redirect URL through your domain
-        return `/api/redirect/${tracking._id}`;
-    } catch (error) {
-        console.error('Error creating tracked link:', error);
-        return deal.link;
-    }
-}
-
-// Function to detect cart management commands
-function isCartManagementCommand(message) {
-    const cartCommands = [
-        'clear cart', 'empty cart', 'remove from cart', 'delete from cart',
-        'keep only', 'checkout only', 'clear everything except', 'clear all except',
-        'remove the', 'delete the', 'take out', 'clear the rest', 'empty my cart',
-        'clear my cart', 'show cart', 'view cart', 'what\'s in my cart'
-    ];
-    
-    const lowerMessage = message.toLowerCase();
-    
-    return cartCommands.some(command => lowerMessage.includes(command));
-}
-
-// Function to parse cart commands
-function parseCartCommand(message) {
-    const lowerMessage = message.toLowerCase();
-    
-    // Show cart
-    if (lowerMessage.includes('show cart') || 
-        lowerMessage.includes('view cart') ||
-        lowerMessage.includes('what\'s in my cart')) {
-        return { action: 'show_cart' };
-    }
-    
-    // Clear entire cart
-    if (lowerMessage.includes('clear cart') || 
-        lowerMessage.includes('empty cart') ||
-        lowerMessage.includes('clear my cart') ||
-        lowerMessage.includes('empty my cart') ||
-        (lowerMessage.includes('clear everything') && !lowerMessage.includes('except'))) {
-        return { action: 'clear_cart' };
-    }
-    
-    // Keep only specific items
-    if (lowerMessage.includes('keep only') || 
-        lowerMessage.includes('checkout only') ||
-        lowerMessage.includes('clear everything except') ||
-        lowerMessage.includes('clear all except') ||
-        lowerMessage.includes('clear the rest') ||
-        lowerMessage.includes('i only want')) {
-        
-        // Extract items to keep
-        let itemsToKeep = [];
-        
-        if (lowerMessage.includes('apple watch') || lowerMessage.includes('watch 9')) {
-            itemsToKeep = ['apple watch', 'watch series 9', 'apple watch series 9'];
-        }
-        
-        // More sophisticated parsing for other items
-        const keepMatch = message.match(/keep only (.+?)(?:,|\.|$)/i) || 
-                         message.match(/checkout only (.+?)(?:,|\.|$)/i) ||
-                         message.match(/clear everything except (.+?)(?:,|\.|$)/i) ||
-                         message.match(/clear all except (.+?)(?:,|\.|$)/i) ||
-                         message.match(/i only want (.+?)(?:,|\.|$)/i);
-        
-        if (keepMatch && itemsToKeep.length === 0) {
-            itemsToKeep = keepMatch[1].split(',').map(item => item.trim());
-        }
-        
-        if (itemsToKeep.length > 0) {
-            return { action: 'keep_only', items: itemsToKeep };
-        }
-    }
-    
-    // Remove specific items
-    if (lowerMessage.includes('remove the') || 
-        lowerMessage.includes('delete the') ||
-        lowerMessage.includes('take out the')) {
-        
-        const removeMatch = message.match(/remove the (.+?)(?:,|\.|$)/i) || 
-                           message.match(/delete the (.+?)(?:,|\.|$)/i) ||
-                           message.match(/take out the (.+?)(?:,|\.|$)/i);
-        
-        if (removeMatch) {
-            const itemsToRemove = removeMatch[1].split(',').map(item => item.trim());
-            return { action: 'remove_items', items: itemsToRemove };
-        }
-    }
-    
-    return null;
-}
-
-// Redirect endpoint for affiliate tracking (NO AUTH REQUIRED)
-app.get('/api/redirect/:trackingId', async (req, res) => {
-    try {
-        const { trackingId } = req.params;
-        const tracking = await ClickTracking.findById(trackingId);
-
-        if (!tracking) {
-            return res.status(404).send('Link not found');
-        }
-
-        // Mark as clicked and save metadata
-        tracking.clicked = true;
-        tracking.clickedAt = new Date();
-        tracking.userAgent = req.headers['user-agent'];
-        tracking.ipAddress = req.ip || req.connection.remoteAddress;
-        await tracking.save();
-
-        // Log for analytics
-        console.log(`🎯 AFFILIATE CLICK: "${tracking.productTitle}" - ${tracking.price} - ${tracking.source}`);
-
-        // Redirect to affiliate link
-        res.redirect(tracking.affiliateLink);
-    } catch (error) {
-        console.error('Redirect error:', error);
-        res.status(500).send('Redirect failed');
-    }
+    ],
+    searchQuery: { type: String, required: true },
+    notificationMessage: { type: String, required: true },
+    notificationChannel: {
+        type: String,
+        enum: ['in_app', 'email', 'sms'],
+        default: 'in_app'
+    },
+    aiSummary: { type: String },
+    createdAt: { type: Date, default: Date.now },
+    read: { type: Boolean, default: false }
 });
 
-// Dynamic SYSTEM_PROMPT
-const getSystemPrompt = (user, cart = null) => {
-    const cartContext = cart && cart.items.length > 0 ?
-        `\n\nCART CONTEXT - REMEMBER THIS:
-The user has ${cart.items.length} item(s) in their cart totaling $${cart.items.reduce((sum, item) => sum + (item.price * item.quantity), 0).toFixed(2)}.
-Items in cart: ${cart.items.map(item => `${item.title} (Qty: ${item.quantity})`).join(', ')}.
+const PartyNotification = mongoose.model('PartyNotification', partyNotificationSchema);
 
-IMPORTANT CART BEHAVIORS:
-1. When user is discussing purchases, gently remind them about cart items: "By the way, I noticed you have ${cart.items.length} item(s) in your cart. Want to review them before checking out?"
-2. If they mention "checkout", "buy", or "purchase", offer to help with their cart items
-3. If they ask about stock, offer to check their cart items
-4. If they're searching for new items, suggest they might want to add to cart if it looks good
-5. If they mention "cart", "shopping cart", or "basket", offer to show them their current items
-6. When they add new items to cart, confirm and remind them of total items
-7. If they want to remove items, use cart management commands (see below)` :
-        '';
+// Middleware to authenticate and retrieve user from token
+const authenticateToken = (req, res, next) => {
+    const authHeader = req.headers.authorization;
 
-    const basePrompt = `You are "Son of Anton" - a super friendly, upbeat, and enthusiastic shopping assistant with tons of personality! ${cartContext}
-
-YOUR PERSONALITY:
-- You're excited about helping people find great deals! Use emojis and exclamation marks!
-- You're very friendly and chatty - like talking to an enthusiastic best friend
-- You understand users want quick results but also appreciate personalized recommendations
-- You're knowledgeable and give personalized recommendations
-- Keep responses SHORT and conversational - 2-3 sentences max unless providing detailed options
-
-NEW QUICK SEARCH STRATEGY:
-When users ask for products, follow this approach:
-
-1. **IMMEDIATE ACTION**: Always start searching right away with a basic query based on what they mentioned
-2. **OPTIONAL DETAILS**: While searching, ask if they want to provide more details for better results
-3. **BALANCED APPROACH**: Don't ask multiple questions before searching - get them results first!
-
-SPECIAL COMMANDS:
-- When users want ongoing searches, say: "SEARCH_PARTY: [item description]|[max budget]|[preferences]|[frequency in hours]"
-- When users want to remove cart items, say: "REMOVE_CART_ITEMS: [item names separated by commas]"
-- When users want to keep only specific cart items, say: "KEEP_CART_ITEMS: [item names to keep separated by commas]"
-- When users want to clear their entire cart, say: "CLEAR_CART"
-- When users want to see their cart, say: "SHOW_CART"
-- Only use SEARCH: when doing immediate single searches
-- Keep all responses concise and friendly
-
-CART MANAGEMENT EXAMPLES:
-User: "remove the laptop from my cart"
-You: "REMOVE_CART_ITEMS: laptop" + "I'll remove that laptop from your cart! 🛒"
-
-User: "i only want to checkout the apple watch, clear the rest"
-You: "KEEP_CART_ITEMS: apple watch" + "Perfect! I'll keep only your Apple Watch in the cart and remove everything else! 🛍️"
-
-User: "empty my cart"
-You: "CLEAR_CART" + "Clearing out your cart! 🧹 Your shopping cart is now empty."
-
-User: "show my cart"
-You: "SHOW_CART" + "Let me show you what's in your cart! 🛒"
-
-MANAGING SEARCH PARTIES:
-- When users ask about their search parties, respond with: "LIST_SEARCH_PARTIES"
-- When users want to edit a search party, guide them to use the web interface
-- When users ask to change frequency, explain they can do it per search party
-
-QUICK SEARCH FORMAT:
-When user mentions a product, respond with:
-- Start immediate search with basic query
-- Show quick results 
-- Ask if they want to refine with: budget, brand preferences, specific features, etc.
-
-Example approach:
-User: "I need a new laptop"
-You: "SEARCH: laptop deals today" + "Searching for laptops! 💻 Want to specify your budget or preferred brand for more tailored results?"
-
-This gives them immediate value while keeping the door open for better personalization.`;
-
-    if (user) {
-        return `${basePrompt}
-
-PERSONALIZATION:
-- You are talking to ${user.username} (email: ${user.email})
-- Always address them by their name when appropriate - use "${user.username}" naturally in conversation
-- Remember their preferences from previous conversations
-- Be extra personal and friendly since you know who you're talking to
-- Reference past conversations or preferences if relevant
-- Make them feel valued and remembered
-
-Remember: You're Son of Anton - friendly, helpful, personal, and always making your responses look nice and easy to read!`;
+    // Allow unauthenticated access but attach userId if token is valid
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+        req.userId = null; // no userId for unauthenticated requests
+        return next();
     }
 
-    return `${basePrompt}
+    const token = authHeader.split(' ')[1];
 
-Remember: You're Son of Anton - friendly, helpful, and always making your responses look nice and easy to read!`;
-};
-
-// Authentication middleware
-const authenticateToken = async (req, res, next) => {
-    const authHeader = req.headers['authorization'];
-    const token = authHeader && authHeader.split(' ')[1];
-
-    if (token) {
-        try {
-            const decoded = jwt.verify(token, JWT_SECRET);
-            req.user = await User.findById(decoded.userId);
-        } catch (error) {
-            console.error('Token verification error:', error);
-        }
+    try {
+        const decoded = jwt.verify(token, JWT_SECRET);
+        req.userId = decoded.userId;
+    } catch (err) {
+        console.error('JWT verification failed:', err.message);
+        req.userId = null;
     }
+
     next();
 };
 
-// Auth routes
+app.use(authenticateToken);
+
+// Search products directly from Amazon Product Advertising API
+async function searchAmazonProducts(searchQuery) {
+    if (!AMAZON_API_ENABLED || !amazonApi || !ProductAdvertisingAPIv1) {
+        console.warn('Amazon PA-API not enabled or SDK not available, skipping direct Amazon search.');
+        return [];
+    }
+
+    const partnerTag = AFFILIATE_CONFIGS.amazon.tag;
+
+    const searchItemsRequest = new ProductAdvertisingAPIv1.SearchItemsRequest();
+    searchItemsRequest['PartnerTag'] = partnerTag;
+    searchItemsRequest['PartnerType'] = 'Associates';
+    searchItemsRequest['Keywords'] = searchQuery;
+    searchItemsRequest['SearchIndex'] = 'All';
+    searchItemsRequest['ItemCount'] = 10;
+    searchItemsRequest['Resources'] = [
+        'Images.Primary.Medium',
+        'ItemInfo.Title',
+        'Offers.Listings.Price',
+        'CustomerReviews.Count',
+        'CustomerReviews.StarRating',
+        'ItemInfo.ByLineInfo',
+        'ItemInfo.ProductInfo'
+    ];
+
+    return new Promise((resolve) => {
+        amazonApi.searchItems(searchItemsRequest, function (error, data, response) {
+            if (error) {
+                console.error('Error calling Amazon PA-API:', error.message || error);
+                return resolve([]);
+            }
+
+            try {
+                const searchItemsResponse = ProductAdvertisingAPIv1.SearchItemsResponse.constructFromObject(data);
+                const items = (searchItemsResponse.SearchResult && searchItemsResponse.SearchResult.Items) || [];
+
+                const mapped = items
+                    .map((item) => {
+                        const asin = item.ASIN;
+                        const title =
+                            item.ItemInfo &&
+                            item.ItemInfo.Title &&
+                            item.ItemInfo.Title.DisplayValue
+                                ? item.ItemInfo.Title.DisplayValue
+                                : 'Unknown Amazon Product';
+
+                        const image =
+                            item.Images &&
+                            item.Images.Primary &&
+                            item.Images.Primary.Medium &&
+                            item.Images.Primary.Medium.URL
+                                ? item.Images.Primary.Medium.URL
+                                : null;
+
+                        let price = null;
+                        if (
+                            item.Offers &&
+                            item.Offers.Listings &&
+                            item.Offers.Listings[0] &&
+                            item.Offers.Listings[0].Price &&
+                            typeof item.Offers.Listings[0].Price.Amount === 'number'
+                        ) {
+                            price = item.Offers.Listings[0].Price.Amount;
+                        }
+
+                        const rating =
+                            item.CustomerReviews &&
+                            item.CustomerReviews.StarRating &&
+                            item.CustomerReviews.StarRating.DisplayValue
+                                ? item.CustomerReviews.StarRating.DisplayValue
+                                : 'N/A';
+
+                        const reviewsCount =
+                            item.CustomerReviews &&
+                            typeof item.CustomerReviews.Count === 'number'
+                                ? item.CustomerReviews.Count
+                                : 'N/A';
+
+                        const detailUrl = item.DetailPageURL || null;
+
+                        return {
+                            asin,
+                            title,
+                            price,
+                            thumbnail: image,
+                            link: detailUrl,
+                            source: 'Amazon',
+                            rating,
+                            reviews: reviewsCount
+                        };
+                    })
+                    .filter((p) => p.price !== null && p.link);
+
+                return resolve(mapped);
+            } catch (parseError) {
+                console.error('Error parsing Amazon PA-API response:', parseError.message || parseError);
+                return resolve([]);
+            }
+        });
+    });
+}
+
+// Unified search: Amazon (direct API) + SerpAPI (Google Shopping, non-Amazon only)
+async function searchAllSources(searchQuery) {
+    const [amazonProducts, serpResults] = await Promise.all([
+        searchAmazonProducts(searchQuery),
+        searchItem(searchQuery).catch((err) => {
+            console.error('SerpAPI search error:', err.message || err);
+            return null;
+        })
+    ]);
+
+    const shoppingResults = [];
+
+    // Add Amazon products from Amazon PA-API as primary source
+    for (const p of amazonProducts) {
+        shoppingResults.push({
+            price: p.price,
+            thumbnail: p.thumbnail,
+            link: p.link,
+            source: p.source,
+            title: p.title,
+            rating: p.rating,
+            reviews: p.reviews
+        });
+    }
+
+    // Add non-Amazon products from SerpAPI as secondary
+    if (serpResults && serpResults.shopping_results) {
+        for (const item of serpResults.shopping_results) {
+            const source = item.source || item.merchant || item.store || '';
+            if (source && source.toLowerCase().includes('amazon')) {
+                // Skip any Amazon items from Google – we only want direct Amazon API data
+                continue;
+            }
+            shoppingResults.push(item);
+        }
+    }
+
+    // We return an object that matches what findBestDeals expects
+    return { shopping_results: shoppingResults };
+}
+
+// Helper function to generate JWT token
+function generateToken(user) {
+    return jwt.sign(
+        { userId: user._id, email: user.email },
+        JWT_SECRET,
+        { expiresIn: '7d' }
+    );
+}
+
+// Register Route
 app.post('/api/register', async (req, res) => {
     try {
-        const { username, email, password } = req.body;
+        const { username, email, password, preferences } = req.body;
 
-        if (!username || !email || !password) {
-            return res.status(400).json({ error: 'All fields are required' });
+        if (!email || !password) {
+            return res.status(400).json({ error: 'Email and password are required' });
         }
 
-        const existingUser = await User.findOne({
-            $or: [{ email }, { username }]
+        const existingUser = await User.findOne({ email });
+        if (existingUser) {
+            return res.status(400).json({ error: 'User with that email already exists' });
+        }
+
+        const hashedPassword = await bcrypt.hash(password, 10);
+
+        const user = new User({
+            username,
+            email,
+            password: hashedPassword,
+            preferences
         });
 
-        if (existingUser) {
-            return res.status(400).json({ error: 'User already exists' });
-        }
+        const savedUser = await user.save();
 
-        const hashedPassword = await bcrypt.hash(password, 12);
-        const user = new User({ username, email, password: hashedPassword });
-        await user.save();
-
-        const token = jwt.sign({ userId: user._id }, JWT_SECRET, { expiresIn: '7d' });
+        const token = generateToken(savedUser);
 
         res.status(201).json({
-            message: 'User created successfully',
-            token,
+            message: 'User registered successfully',
             user: {
-                id: user._id,
-                username: user.username,
-                email: user.email,
-                searchPreferences: user.searchPreferences
-            }
+                id: savedUser._id,
+                username: savedUser.username,
+                email: savedUser.email,
+                preferences: savedUser.preferences,
+                searchPreferences: savedUser.searchPreferences
+            },
+            token
         });
     } catch (error) {
         console.error('Registration error:', error);
-        res.status(500).json({ error: 'Internal server error' });
+        res.status(500).json({ error: 'Registration failed' });
     }
 });
 
+// Login Route
 app.post('/api/login', async (req, res) => {
     try {
         const { email, password } = req.body;
@@ -576,1099 +493,535 @@ app.post('/api/login', async (req, res) => {
         }
 
         const user = await User.findOne({ email });
-        if (!user) {
+        if (!user || !user.password) {
+            return res.status(400).json({ error: 'Invalid credentials or user registered with OAuth' });
+        }
+
+        const isMatch = await bcrypt.compare(password, user.password);
+        if (!isMatch) {
             return res.status(400).json({ error: 'Invalid credentials' });
         }
 
-        const isValidPassword = await bcrypt.compare(password, user.password);
-        if (!isValidPassword) {
-            return res.status(400).json({ error: 'Invalid credentials' });
-        }
-
-        const token = jwt.sign({ userId: user._id }, JWT_SECRET, { expiresIn: '7d' });
+        const token = generateToken(user);
 
         res.json({
             message: 'Login successful',
-            token,
             user: {
                 id: user._id,
                 username: user.username,
                 email: user.email,
+                preferences: user.preferences,
                 searchPreferences: user.searchPreferences
-            }
+            },
+            token
         });
     } catch (error) {
         console.error('Login error:', error);
-        res.status(500).json({ error: 'Internal server error' });
+        res.status(500).json({ error: 'Login failed' });
     }
 });
 
-// Update user search preferences
+// Google OAuth Registration/Login
+app.post('/api/google-auth', async (req, res) => {
+    try {
+        const { email, name } = req.body;
+
+        if (!email) {
+            return res.status(400).json({ error: 'Email is required' });
+        }
+
+        let user = await User.findOne({ email });
+
+        if (!user) {
+            user = new User({
+                username: name || email.split('@')[0],
+                email,
+                preferences: {
+                    shoppingStyle: 'Balanced'
+                }
+            });
+            await user.save();
+        }
+
+        const token = generateToken(user);
+
+        res.json({
+            message: 'Authentication successful',
+            user: {
+                id: user._id,
+                username: user.username,
+                email: user.email,
+                preferences: user.preferences,
+                searchPreferences: user.searchPreferences
+            },
+            token
+        });
+    } catch (error) {
+        console.error('Google auth error:', error);
+        res.status(500).json({ error: 'Google authentication failed' });
+    }
+});
+
+// Get Current User Profile
+app.get('/api/user/profile', authenticateToken, async (req, res) => {
+    try {
+        if (!req.userId) {
+            return res.status(401).json({ error: 'Unauthorized' });
+        }
+
+        const user = await User.findById(req.userId).select('-password');
+
+        if (!user) {
+            return res.status(404).json({ error: 'User not found' });
+        }
+
+        res.json({ user });
+    } catch (error) {
+        console.error('Get profile error:', error);
+        res.status(500).json({ error: 'Failed to fetch user profile' });
+    }
+});
+
+// Update User Preferences
 app.put('/api/user/preferences', authenticateToken, async (req, res) => {
     try {
-        const { frequencyHours, notifyOnDeals, maxPriceAlerts, quickSearchMode } = req.body;
-
-        if (!req.user) {
-            return res.status(401).json({ error: 'Authentication required' });
+        if (!req.userId) {
+            return res.status(401).json({ error: 'Unauthorized' });
         }
 
-        const user = await User.findById(req.user._id);
+        const { preferences } = req.body;
 
-        if (frequencyHours !== undefined) {
-            if (frequencyHours < MIN_SEARCH_INTERVAL || frequencyHours > MAX_SEARCH_INTERVAL) {
-                return res.status(400).json({
-                    error: `Search frequency must be between ${MIN_SEARCH_INTERVAL} and ${MAX_SEARCH_INTERVAL} hours`
-                });
-            }
-            user.searchPreferences.frequencyHours = frequencyHours;
+        const user = await User.findByIdAndUpdate(
+            req.userId,
+            { $set: { preferences } },
+            { new: true }
+        ).select('-password');
+
+        if (!user) {
+            return res.status(404).json({ error: 'User not found' });
         }
-
-        if (notifyOnDeals !== undefined) {
-            user.searchPreferences.notifyOnDeals = notifyOnDeals;
-        }
-
-        if (maxPriceAlerts !== undefined) {
-            user.searchPreferences.maxPriceAlerts = maxPriceAlerts;
-        }
-
-        if (quickSearchMode !== undefined) {
-            user.searchPreferences.quickSearchMode = quickSearchMode;
-        }
-
-        await user.save();
 
         res.json({
             message: 'Preferences updated successfully',
-            searchPreferences: user.searchPreferences
+            user
         });
     } catch (error) {
         console.error('Update preferences error:', error);
-        res.status(500).json({ error: 'Internal server error' });
+        res.status(500).json({ error: 'Failed to update preferences' });
     }
 });
 
-// Get current search configuration
-app.get('/api/search-config', authenticateToken, async (req, res) => {
+// Update Search Preferences
+app.put('/api/user/search-preferences', authenticateToken, async (req, res) => {
     try {
-        const userConfig = req.user ? req.user.searchPreferences : null;
-
-        res.json({
-            system: {
-                frequencyHours: SEARCH_FREQUENCY_HOURS,
-                frequencyMinutes: SEARCH_FREQUENCY_MINUTES,
-                minInterval: MIN_SEARCH_INTERVAL,
-                maxInterval: MAX_SEARCH_INTERVAL,
-                currentInterval: VALIDATED_CRON_INTERVAL / (60 * 60 * 1000)
-            },
-            user: userConfig
-        });
-    } catch (error) {
-        console.error('Get search config error:', error);
-        res.status(500).json({ error: 'Internal server error' });
-    }
-});
-
-// Get affiliate statistics (admin endpoint)
-app.get('/api/affiliate/stats', authenticateToken, async (req, res) => {
-    try {
-        if (!req.user) {
-            return res.status(401).json({ error: 'Authentication required' });
+        if (!req.userId) {
+            return res.status(401).json({ error: 'Unauthorized' });
         }
 
-        const totalTrackedLinks = await ClickTracking.countDocuments();
-        const totalClicks = await ClickTracking.countDocuments({ clicked: true });
-        const clickRate = totalTrackedLinks > 0 ? ((totalClicks / totalTrackedLinks) * 100).toFixed(2) : 0;
+        const { searchPreferences } = req.body;
 
-        const statsBySource = await ClickTracking.aggregate([
-            {
-                $group: {
-                    _id: '$source',
-                    totalClicks: { $sum: { $cond: ['$clicked', 1, 0] } },
-                    totalProducts: { $sum: 1 },
-                    avgPrice: { $avg: '$price' },
-                    lastClick: { $max: '$clickedAt' }
-                }
-            },
-            { $sort: { totalClicks: -1 } }
-        ]);
+        const user = await User.findByIdAndUpdate(
+            req.userId,
+            { $set: { searchPreferences } },
+            { new: true }
+        ).select('-password');
 
-        const topProducts = await ClickTracking.find({ clicked: true })
-            .sort({ clickedAt: -1 })
-            .limit(10)
-            .select('productTitle price source clickedAt searchQuery');
+        if (!user) {
+            return res.status(404).json({ error: 'User not found' });
+        }
 
         res.json({
-            overview: {
-                totalTrackedLinks,
-                totalClicks,
-                clickRate: `${clickRate}%`,
-                potentialRevenue: `Varies by network`
-            },
-            bySource: statsBySource,
-            topProducts: topProducts
+            message: 'Search preferences updated successfully',
+            user
         });
     } catch (error) {
-        console.error('Stats error:', error);
-        res.status(500).json({ error: 'Internal server error' });
+        console.error('Update search preferences error:', error);
+        res.status(500).json({ error: 'Failed to update search preferences' });
     }
 });
 
-// Cart endpoints
-app.get('/api/cart', authenticateToken, async (req, res) => {
+// Save Cart (Create or Update)
+app.post('/api/cart', async (req, res) => {
     try {
-        if (!req.user) {
-            return res.status(401).json({ error: 'Authentication required' });
+        const { userId, sessionId, items } = req.body;
+
+        if (!userId && !sessionId) {
+            return res.status(400).json({ error: 'Either userId or sessionId is required' });
         }
 
-        let cart = await Cart.findOne({ userId: req.user._id });
+        let cart = await Cart.findOne({ $or: [{ userId }, { sessionId }] });
 
         if (!cart) {
-            cart = new Cart({ userId: req.user._id, items: [] });
-            await cart.save();
+            cart = new Cart({
+                userId: userId || undefined,
+                sessionId: sessionId || undefined,
+                items,
+                createdAt: new Date(),
+                updatedAt: new Date()
+            });
+        } else {
+            cart.items = items;
+            cart.updatedAt = new Date();
         }
 
-        res.json(cart);
+        await cart.save();
+        res.json({ message: 'Cart saved successfully', cart });
+    } catch (error) {
+        console.error('Save cart error:', error);
+        res.status(500).json({ error: 'Failed to save cart' });
+    }
+});
+
+// Get Cart
+app.get('/api/cart', async (req, res) => {
+    try {
+        const { userId, sessionId } = req.query;
+
+        if (!userId && !sessionId) {
+            return res.status(400).json({ error: 'Either userId or sessionId is required' });
+        }
+
+        const cart = await Cart.findOne({ $or: [{ userId }, { sessionId }] });
+
+        if (!cart) {
+            return res.json({ items: [] });
+        }
+
+        res.json({ items: cart.items });
     } catch (error) {
         console.error('Get cart error:', error);
-        res.status(500).json({ error: 'Internal server error' });
+        res.status(500).json({ error: 'Failed to retrieve cart' });
     }
 });
 
-app.post('/api/cart/add', authenticateToken, async (req, res) => {
+// Clear Cart
+app.delete('/api/cart', async (req, res) => {
     try {
-        if (!req.user) {
-            return res.status(401).json({ error: 'Authentication required' });
+        const { userId, sessionId } = req.query;
+
+        if (!userId && !sessionId) {
+            return res.status(400).json({ error: 'Either userId or sessionId is required' });
         }
 
-        const { productId, title, price, quantity = 1, source, link, image, rating, reviews } = req.body;
-
-        if (!productId || !title || !price || !source || !link) {
-            return res.status(400).json({ error: 'Missing required fields' });
-        }
-
-        let cart = await Cart.findOne({ userId: req.user._id });
-
-        if (!cart) {
-            cart = new Cart({ userId: req.user._id, items: [] });
-        }
-
-        // Check if item already exists in cart
-        const existingItemIndex = cart.items.findIndex(item =>
-            item.productId === productId && item.source === source
-        );
-
-        if (existingItemIndex > -1) {
-            // Update quantity if item exists
-            cart.items[existingItemIndex].quantity += quantity;
-            cart.items[existingItemIndex].updatedAt = new Date();
-        } else {
-            // Add new item
-            cart.items.push({
-                productId,
-                title,
-                price,
-                quantity,
-                source,
-                link,
-                image,
-                rating,
-                reviews,
-                inStock: true,
-                lastStockCheck: new Date(),
-                addedAt: new Date()
-            });
-        }
-
-        cart.updatedAt = new Date();
-        await cart.save();
-
-        res.json({
-            message: 'Item added to cart',
-            cart: cart,
-            totalItems: cart.items.reduce((sum, item) => sum + item.quantity, 0)
-        });
-    } catch (error) {
-        console.error('Add to cart error:', error);
-        res.status(500).json({ error: 'Internal server error' });
-    }
-});
-
-app.put('/api/cart/update/:itemId', authenticateToken, async (req, res) => {
-    try {
-        if (!req.user) {
-            return res.status(401).json({ error: 'Authentication required' });
-        }
-
-        const { itemId } = req.params;
-        const { quantity } = req.body;
-
-        if (!quantity || quantity < 1) {
-            return res.status(400).json({ error: 'Invalid quantity' });
-        }
-
-        const cart = await Cart.findOne({ userId: req.user._id });
-
-        if (!cart) {
-            return res.status(404).json({ error: 'Cart not found' });
-        }
-
-        const item = cart.items.id(itemId);
-        if (!item) {
-            return res.status(404).json({ error: 'Item not found in cart' });
-        }
-
-        item.quantity = quantity;
-        item.updatedAt = new Date();
-        cart.updatedAt = new Date();
-
-        await cart.save();
-
-        res.json({
-            message: 'Cart updated successfully',
-            cart: cart
-        });
-    } catch (error) {
-        console.error('Update cart error:', error);
-        res.status(500).json({ error: 'Internal server error' });
-    }
-});
-
-app.delete('/api/cart/remove/:itemId', authenticateToken, async (req, res) => {
-    try {
-        if (!req.user) {
-            return res.status(401).json({ error: 'Authentication required' });
-        }
-
-        const { itemId } = req.params;
-
-        const cart = await Cart.findOne({ userId: req.user._id });
-
-        if (!cart) {
-            return res.status(404).json({ error: 'Cart not found' });
-        }
-
-        cart.items.pull({ _id: itemId });
-        cart.updatedAt = new Date();
-
-        await cart.save();
-
-        res.json({
-            message: 'Item removed from cart',
-            cart: cart
-        });
-    } catch (error) {
-        console.error('Remove from cart error:', error);
-        res.status(500).json({ error: 'Internal server error' });
-    }
-});
-
-app.delete('/api/cart/clear', authenticateToken, async (req, res) => {
-    try {
-        if (!req.user) {
-            return res.status(401).json({ error: 'Authentication required' });
-        }
-
-        const cart = await Cart.findOne({ userId: req.user._id });
-
-        if (!cart) {
-            return res.status(404).json({ error: 'Cart not found' });
-        }
-
-        cart.items = [];
-        cart.updatedAt = new Date();
-
-        await cart.save();
-
-        res.json({
-            message: 'Cart cleared successfully',
-            cart: cart
-        });
+        await Cart.findOneAndDelete({ $or: [{ userId }, { sessionId }] });
+        res.json({ message: 'Cart cleared successfully' });
     } catch (error) {
         console.error('Clear cart error:', error);
-        res.status(500).json({ error: 'Internal server error' });
+        res.status(500).json({ error: 'Failed to clear cart' });
     }
 });
 
-// Keep only specific items in cart
-app.post('/api/cart/keep-only', authenticateToken, async (req, res) => {
+// Create a scheduled search (Party)
+app.post('/api/party', authenticateToken, async (req, res) => {
     try {
-        if (!req.user) {
-            return res.status(401).json({ error: 'Authentication required' });
+        const { itemName, searchQuery, searchFrequencyHours, aiStyle, stores, maxPrice, minPrice, notificationChannel } = req.body;
+
+        if (!req.userId) {
+            return res.status(401).json({ error: 'Unauthorized' });
         }
 
-        const { itemsToKeep } = req.body;
-
-        if (!itemsToKeep || !Array.isArray(itemsToKeep) || itemsToKeep.length === 0) {
-            return res.status(400).json({ error: 'Items to keep are required' });
+        if (!itemName || !searchQuery) {
+            return res.status(400).json({ error: 'Item name and search query are required' });
         }
 
-        const cart = await Cart.findOne({ userId: req.user._id });
-
-        if (!cart) {
-            return res.status(404).json({ error: 'Cart not found' });
-        }
-
-        // Filter items to keep based on keyword matching
-        const keptItems = cart.items.filter(item => {
-            const itemTitle = item.title.toLowerCase();
-            return itemsToKeep.some(keyword => 
-                itemTitle.includes(keyword.toLowerCase())
-            );
+        const party = new Party({
+            userId: req.userId,
+            itemName,
+            searchQuery,
+            searchFrequencyHours: searchFrequencyHours || 12,
+            aiStyle: aiStyle || 'Balanced',
+            stores: stores && stores.length ? stores : ['amazon', 'ebay', 'walmart', 'bestbuy'],
+            maxPrice: maxPrice || null,
+            minPrice: minPrice || 0,
+            notificationChannel: notificationChannel || 'in_app'
         });
 
-        cart.items = keptItems;
-        cart.updatedAt = new Date();
+        await party.save();
 
-        await cart.save();
+        res.status(201).json({
+            message: 'Party created successfully',
+            party
+        });
+    } catch (error) {
+        console.error('Create party error:', error);
+        res.status(500).json({ error: 'Failed to create party' });
+    }
+});
+
+// Get user's scheduled searches (Parties)
+app.get('/api/party', authenticateToken, async (req, res) => {
+    try {
+        if (!req.userId) {
+            return res.status(401).json({ error: 'Unauthorized' });
+        }
+
+        const parties = await Party.find({ userId: req.userId });
+
+        res.json({ parties });
+    } catch (error) {
+        console.error('Get parties error:', error);
+        res.status(500).json({ error: 'Failed to retrieve parties' });
+    }
+});
+
+// Update a scheduled search (Party)
+app.put('/api/party/:id', authenticateToken, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { itemName, searchQuery, searchFrequencyHours, aiStyle, stores, maxPrice, minPrice, active, notificationChannel } = req.body;
+
+        if (!req.userId) {
+            return res.status(401).json({ error: 'Unauthorized' });
+        }
+
+        const party = await Party.findOneAndUpdate(
+            { _id: id, userId: req.userId },
+            {
+                $set: {
+                    itemName,
+                    searchQuery,
+                    searchFrequencyHours,
+                    aiStyle,
+                    stores,
+                    maxPrice,
+                    minPrice,
+                    active,
+                    notificationChannel
+                }
+            },
+            { new: true }
+        );
+
+        if (!party) {
+            return res.status(404).json({ error: 'Party not found' });
+        }
 
         res.json({
-            message: `Cart updated - kept ${keptItems.length} item(s)`,
-            cart: cart,
-            keptItems: keptItems.map(item => item.title)
+            message: 'Party updated successfully',
+            party
         });
     } catch (error) {
-        console.error('Keep only cart error:', error);
-        res.status(500).json({ error: 'Internal server error' });
+        console.error('Update party error:', error);
+        res.status(500).json({ error: 'Failed to update party' });
     }
 });
 
-// Stock check endpoints
-app.post('/api/cart/check-stock', authenticateToken, async (req, res) => {
+// Delete a scheduled search (Party)
+app.delete('/api/party/:id', authenticateToken, async (req, res) => {
     try {
-        if (!req.user) {
-            return res.status(401).json({ error: 'Authentication required' });
+        const { id } = req.params;
+
+        if (!req.userId) {
+            return res.status(401).json({ error: 'Unauthorized' });
         }
 
-        const { itemId, checkAll = false } = req.body;
+        const result = await Party.findOneAndDelete({ _id: id, userId: req.userId });
 
-        const cart = await Cart.findOne({ userId: req.user._id });
-
-        if (!cart) {
-            return res.status(404).json({ error: 'Cart not found' });
+        if (!result) {
+            return res.status(404).json({ error: 'Party not found' });
         }
 
-        const itemsToCheck = checkAll ? cart.items : [cart.items.id(itemId)];
-        const stockResults = [];
-
-        for (const item of itemsToCheck) {
-            if (!item) continue;
-
-            const wasInStock = item.inStock;
-            // Simulate stock check - in real implementation, you'd call retailer APIs
-            const isInStock = await checkProductStock(item.link, item.source);
-
-            item.inStock = isInStock;
-            item.lastStockCheck = new Date();
-
-            // Record stock check history
-            const stockCheck = new StockCheck({
-                cartItemId: item._id,
-                productTitle: item.title,
-                inStock: isInStock,
-                price: item.price,
-                source: item.source
-            });
-            await stockCheck.save();
-
-            stockResults.push({
-                itemId: item._id,
-                title: item.title,
-                wasInStock,
-                isInStock,
-                price: item.price,
-                source: item.source
-            });
-        }
-
-        cart.updatedAt = new Date();
-        await cart.save();
-
-        res.json({
-            message: checkAll ? 'Stock check completed for all items' : 'Stock check completed',
-            results: stockResults
-        });
+        res.json({ message: 'Party deleted successfully' });
     } catch (error) {
-        console.error('Stock check error:', error);
-        res.status(500).json({ error: 'Internal server error' });
+        console.error('Delete party error:', error);
+        res.status(500).json({ error: 'Failed to delete party' });
     }
 });
 
-// Helper function to check product stock (placeholder implementation)
-async function checkProductStock(link, source) {
+// Get notifications for a user
+app.get('/api/party-notifications', authenticateToken, async (req, res) => {
     try {
-        // This is a simplified implementation
-        // In production, you'd integrate with retailer APIs or use web scraping
+        if (!req.userId) {
+            return res.status(401).json({ error: 'Unauthorized' });
+        }
 
-        console.log(`🔍 Checking stock for ${source} product...`);
+        const notifications = await PartyNotification.find({ userId: req.userId })
+            .sort({ createdAt: -1 })
+            .limit(50);
 
-        // Simulate API call delay
-        await new Promise(resolve => setTimeout(resolve, 1000));
-
-        // For demo purposes, return random stock status
-        // In real implementation, you'd parse the actual product page
-        const isInStock = Math.random() > 0.3; // 70% chance of being in stock
-
-        console.log(`📦 Stock status for ${source}: ${isInStock ? 'IN STOCK' : 'OUT OF STOCK'}`);
-
-        return isInStock;
+        res.json({ notifications });
     } catch (error) {
-        console.error('Stock check error:', error);
-        return false; // Assume out of stock if check fails
+        console.error('Get notifications error:', error);
+        res.status(500).json({ error: 'Failed to retrieve notifications' });
     }
-}
+});
 
-// Helper function to send stock notification
-async function sendStockNotification(user, item, wasInStock, isInStock) {
+// Mark notification as read
+app.put('/api/party-notifications/:id/read', authenticateToken, async (req, res) => {
     try {
-        if (!user.email || !user.searchPreferences.notifyOnDeals) {
-            return;
+        if (!req.userId) {
+            return res.status(401).json({ error: 'Unauthorized' });
         }
 
-        const subject = wasInStock ?
-            `❌ Out of Stock: ${item.title}` :
-            `✅ Back in Stock: ${item.title}`;
+        const { id } = req.params;
 
-        const html = `
-      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-        <h2 style="color: ${wasInStock ? '#dc2626' : '#16a34a'};">${wasInStock ? '❌ Out of Stock' : '✅ Back in Stock'}</h2>
-        <div style="border: 1px solid #e5e5e5; padding: 20px; border-radius: 8px;">
-          <h3>${item.title}</h3>
-          <p><strong>Price:</strong> $${item.price.toFixed(2)}</p>
-          <p><strong>Store:</strong> ${item.source}</p>
-          <p><strong>Status:</strong> ${isInStock ? 'In Stock' : 'Out of Stock'}</p>
-          <a href="${item.link}" style="display: inline-block; background: #3b82f6; color: white; padding: 10px 20px; text-decoration: none; border-radius: 4px; margin-top: 10px;">
-            View Product
-          </a>
-        </div>
-        <p style="color: #6b7280; font-size: 14px; margin-top: 20px;">
-          This notification was sent because you have this item in your cart.
-        </p>
-      </div>
-    `;
+        const notification = await PartyNotification.findOneAndUpdate(
+            { _id: id, userId: req.userId },
+            { $set: { read: true } },
+            { new: true }
+        );
 
-        await transporter.sendMail({
-            from: process.env.EMAIL_FROM,
-            to: user.email,
-            subject: subject,
-            html: html
-        });
+        if (!notification) {
+            return res.status(404).json({ error: 'Notification not found' });
+        }
 
-        console.log(`📧 Stock notification sent to ${user.email}`);
+        res.json({ message: 'Notification marked as read', notification });
     } catch (error) {
-        console.error('Error sending stock notification:', error);
+        console.error('Mark notification as read error:', error);
+        res.status(500).json({ error: 'Failed to update notification' });
     }
+});
+
+// Generate a contextual session ID (simplified)
+function generateSessionId(req) {
+    const ip = req.ip || req.connection.remoteAddress || 'unknown-ip';
+    const userAgent = req.headers['user-agent'] || 'unknown-ua';
+    // Basic hashing
+    return Buffer.from(`${ip}-${userAgent}-${Date.now()}`).toString('base64').slice(0, 32);
 }
 
-// Helper function to send cart update notification
-async function sendCartUpdateNotification(user, searchParty, addedCount) {
+// Store conversation history (per session or user)
+const conversationHistory = new Map();
+
+// Build user preferences prompt for AI
+function buildUserPreferencesPrompt(user) {
+    if (!user || !user.preferences) return '';
+
+    const pref = user.preferences;
+
+    let prompt = '\n\nUser preferences:\n';
+
+    if (pref.budget) {
+        prompt += `- Budget preference: around $${pref.budget}.\n`;
+    }
+
+    if (pref.favoriteStores && pref.favoriteStores.length) {
+        prompt += `- Favorite stores: ${pref.favoriteStores.join(', ')}.\n`;
+    }
+
+    if (pref.dislikedStores && pref.dislikedStores.length) {
+        prompt += `- Stores they avoid: ${pref.dislikedStores.join(', ')}.\n`;
+    }
+
+    if (pref.categories && pref.categories.length) {
+        prompt += `- They are interested in: ${pref.categories.join(', ')}.\n`;
+    }
+
+    if (pref.shoppingStyle) {
+        prompt += `- Shopping style: ${pref.shoppingStyle}.\n`;
+    }
+
+    return prompt;
+}
+
+// Build search preferences prompt for AI
+function buildSearchPreferencesPrompt(user) {
+    if (!user || !user.searchPreferences) return '';
+
+    const sp = user.searchPreferences;
+    let prompt = '\n\nSearch preferences:\n';
+
+    if (sp.minPrice !== undefined && sp.minPrice !== null) {
+        prompt += `- Minimum price: $${sp.minPrice}.\n`;
+    }
+
+    if (sp.maxPrice !== undefined && sp.maxPrice !== null) {
+        prompt += `- Maximum price: $${sp.maxPrice}.\n`;
+    }
+
+    if (sp.preferredStores && sp.preferredStores.length) {
+        prompt += `- Preferred stores: ${sp.preferredStores.join(', ')}.\n`;
+    }
+
+    if (sp.avoidStores && sp.avoidStores.length) {
+        prompt += `- Avoid stores: ${sp.avoidStores.join(', ')}.\n`;
+    }
+
+    prompt += `- Quick search mode: ${sp.quickSearchMode ? 'Enabled' : 'Disabled'}.\n`;
+    prompt += `- Result limit: ${sp.resultLimit}.\n`;
+
+    return prompt;
+}
+
+// Generate AI prompt
+function generateAIPrompt(userMessage, searchQuery, user, messageHistory) {
+    const basePrompt = `
+You are a shopping assistant AI that helps users find the best deals and products.
+
+When appropriate, respond with two parts:
+1) A conversational explanation.
+2) If you want the system to perform a product search, append a line starting with: SEARCH: <query here>
+
+Examples of using SEARCH:
+- SEARCH: "gaming laptop under $1000"
+- SEARCH: "wireless earbuds noise cancellation"
+
+Only use SEARCH when you want the system to fetch live deals.
+`;
+
+    const userPrefPrompt = buildUserPreferencesPrompt(user);
+    const searchPrefPrompt = buildSearchPreferencesPrompt(user);
+
+    const historyText = (messageHistory || [])
+        .map((msg) => `${msg.role === 'user' ? 'User' : 'Assistant'}: ${msg.content}`)
+        .join('\n');
+
+    const finalPrompt = `
+${basePrompt}
+
+User context:
+${userPrefPrompt}
+${searchPrefPrompt}
+
+Conversation history:
+${historyText}
+
+Current user message:
+User: ${userMessage}
+
+If you think a product search is needed based on this conversation, be sure to include "SEARCH: <query>".
+`;
+
+    return finalPrompt;
+}
+
+// Call Google Gemini API
+async function callGeminiAPI(prompt) {
     try {
-        if (!user.email || !user.searchPreferences.notifyOnDeals) {
-            return;
-        }
-
-        const subject = `🛒 ${addedCount} Items Added to Cart from Search Party`;
-
-        const html = `
-      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-        <h2 style="color: #3b82f6;">🎉 Search Party Results Added to Cart!</h2>
-        <div style="border: 1px solid #e5e5e5; padding: 20px; border-radius: 8px;">
-          <h3>Search Party: "${searchParty.itemName}"</h3>
-          <p><strong>Items Added:</strong> ${addedCount}</p>
-          <p>We found some great deals and automatically added them to your cart!</p>
-          <a href="${process.env.FRONTEND_URL || 'http://localhost:3000'}/cart" style="display: inline-block; background: #3b82f6; color: white; padding: 10px 20px; text-decoration: none; border-radius: 4px; margin-top: 10px;">
-            View Your Cart
-          </a>
-        </div>
-        <p style="color: #6b7280; font-size: 14px; margin-top: 20px;">
-          You can review and manage these items in your cart anytime.
-        </p>
-      </div>
-    `;
-
-        await transporter.sendMail({
-            from: process.env.EMAIL_FROM,
-            to: user.email,
-            subject: subject,
-            html: html
-        });
-
-        console.log(`📧 Cart update notification sent to ${user.email}`);
-    } catch (error) {
-        console.error('Error sending cart update notification:', error);
-    }
-}
-
-// Helper function to detect product search intent
-function isProductSearchQuery(message) {
-    const searchTriggers = [
-        'find', 'search', 'look for', 'buy', 'purchase', 'shop for', 'get',
-        'need', 'want', 'looking for', 'shopping for', 'deal', 'price',
-        'cost', 'affordable', 'cheap', 'discount', 'sale'
-    ];
-
-    const productCategories = [
-        'laptop', 'phone', 'tv', 'headphone', 'camera', 'tablet', 'watch',
-        'game', 'console', 'book', 'clothing', 'shoe', 'furniture',
-        'appliance', 'tool', 'electronic', 'computer', 'monitor',
-        'keyboard', 'mouse', 'printer', 'speaker', 'earbud', 'airpod'
-    ];
-
-    const lowerMessage = message.toLowerCase();
-
-    // Skip if this is a cart management command
-    if (isCartManagementCommand(message)) {
-        return false;
-    }
-
-    const hasSearchTrigger = searchTriggers.some(trigger =>
-        lowerMessage.includes(trigger)
-    );
-
-    const hasProductCategory = productCategories.some(category =>
-        lowerMessage.includes(category)
-    );
-
-    const productPatterns = [
-        /\d+\s*(inch|gb|tb|mb|ghz)/i,
-        /(rtx|gtx)\s*\d+/i,
-        /(iphone|samsung|macbook|ipad|thinkpad|xps)/i,
-        /\$\d+/,
-        /under\s*\$\d+/i
-    ];
-
-    const hasProductPattern = productPatterns.some(pattern =>
-        pattern.test(lowerMessage)
-    );
-
-    return hasSearchTrigger || hasProductCategory || hasProductPattern;
-}
-
-// Generate search query from user message
-function generateSearchQuery(message) {
-    const cleanedMessage = message.replace(
-        /(can you |please |could you |i |want to |looking to |need to )?(find|search for|look for|get|buy|purchase)?\s*/gi,
-        ''
-    ).trim();
-
-    if (cleanedMessage.length > 0) {
-        return `${cleanedMessage} deals today`;
-    }
-
-    return `${message} shopping deals`;
-}
-
-// Chat endpoint
-app.post('/api/chat', authenticateToken, async (req, res) => {
-    try {
-        const { message, sessionId } = req.body;
-
-        if (!message) {
-            return res.status(400).json({ error: 'Message is required' });
-        }
-
-        const user = req.user;
-        const session = sessionId || Date.now().toString();
-
-        // Get user's cart for context
-        let userCart = null;
-        if (user) {
-            userCart = await Cart.findOne({ userId: user._id });
-        }
-
-        // Check for cart management commands FIRST
-        const cartCommand = isCartManagementCommand(message);
-        if (cartCommand) {
-            const parsedCommand = parseCartCommand(message);
-            
-            if (parsedCommand) {
-                return res.json({
-                    sessionId: session,
-                    type: 'cart_command',
-                    message: `I'll handle that cart request! 🛒`,
-                    command: parsedCommand,
-                    cart: userCart
-                });
-            }
-        }
-
-        let conversationHistory = [];
-        let conversationDoc = null;
-
-        if (user) {
-            conversationDoc = await Conversation.findOne({ userId: user._id, sessionId: session });
-            if (conversationDoc) {
-                conversationHistory = conversationDoc.messages.map(msg => ({
-                    role: msg.role,
-                    parts: [{ text: msg.content }]
-                }));
-            }
-        } else {
-            if (!activeSessions.has(session)) {
-                activeSessions.set(session, []);
-            }
-            conversationHistory = activeSessions.get(session) || [];
-        }
-
-        conversationHistory.push({
-            role: 'user',
-            parts: [{ text: message }]
-        });
-
-        if (user) {
-            const userMessage = { role: 'user', content: message };
-            if (!conversationDoc) {
-                conversationDoc = new Conversation({
-                    userId: user._id,
-                    sessionId: session,
-                    messages: [userMessage]
-                });
-            } else {
-                conversationDoc.messages.push(userMessage);
-                conversationDoc.updatedAt = new Date();
-            }
-            await conversationDoc.save();
-        }
-
-        const systemPrompt = getSystemPrompt(user, userCart);
-
         const response = await axios.post(
             `${GEMINI_URL}?key=${GOOGLE_API_KEY}`,
             {
                 contents: [
                     {
-                        role: 'user',
-                        parts: [{ text: systemPrompt }]
+                        parts: [
+                            {
+                                text: prompt,
+                            },
+                        ],
                     },
-                    {
-                        role: 'model',
-                        parts: [{ text: 'Understood! I am Son of Anton, ready to help with shopping! 🛍️ I\'ll search immediately and offer refinements!' }]
-                    },
-                    ...conversationHistory
-                ]
+                ],
             },
             {
                 headers: {
-                    'Content-Type': 'application/json'
-                }
+                    'Content-Type': 'application/json',
+                },
             }
         );
 
-        let aiResponse = response.data.candidates[0].content.parts[0].text;
-        aiResponse = aiResponse.replace(/\*\*\*/g, '**');
-
-        conversationHistory.push({
-            role: 'model',
-            parts: [{ text: aiResponse }]
-        });
-
-        if (user && conversationDoc) {
-            const assistantMessage = { role: 'model', content: aiResponse };
-            conversationDoc.messages.push(assistantMessage);
-            conversationDoc.updatedAt = new Date();
-            await conversationDoc.save();
-        } else if (!user) {
-            activeSessions.set(session, conversationHistory);
+        const candidates = response.data?.candidates;
+        if (!candidates || candidates.length === 0) {
+            throw new Error('No candidates returned from Gemini');
         }
 
-        // Check if AI wants to list search parties
-        if (aiResponse.includes('LIST_SEARCH_PARTIES')) {
-            if (!user) {
-                return res.json({
-                    sessionId: session,
-                    type: 'message',
-                    message: "🔒 To view your search parties, you need to be logged in! Please create an account to save your ongoing searches."
-                });
-            }
-
-            const searchParties = await SearchParty.find({ userId: user._id }).sort({ createdAt: -1 });
-
-            if (searchParties.length === 0) {
-                return res.json({
-                    sessionId: session,
-                    type: 'message',
-                    message: `You don't have any active search parties yet, ${user.username}! 🎯\n\nWant to start one? Just tell me what you're looking for!`
-                });
-            }
-
-            return res.json({
-                sessionId: session,
-                type: 'search_parties_list',
-                message: `Here are your search parties, ${user.username}! 🎯`,
-                searchParties: searchParties.map(party => ({
-                    id: party._id,
-                    itemName: party.itemName,
-                    maxPrice: party.maxPrice,
-                    preferences: party.preferences,
-                    isActive: party.isActive,
-                    searchFrequency: party.searchFrequency || user.searchPreferences.frequencyHours,
-                    lastSearched: party.lastSearched,
-                    foundResults: party.foundResults.length,
-                    createdAt: party.createdAt
-                }))
-            });
-        }
-
-        // Check if AI wants to create a search party
-        if (aiResponse.includes('SEARCH_PARTY:')) {
-            if (!user) {
-                return res.json({
-                    sessionId: session,
-                    type: 'message',
-                    message: "🔒 To set up a Search Party, you need to be logged in! Please create an account to save your ongoing searches."
-                });
-            }
-
-            const partyData = aiResponse.split('SEARCH_PARTY:')[1].trim().split('|');
-            const itemName = partyData[0]?.trim();
-
-            let maxPrice = null;
-            if (partyData[1]) {
-                const priceStr = partyData[1].trim().replace(/[$,]/g, '');
-                const parsedPrice = parseFloat(priceStr);
-                if (!isNaN(parsedPrice) && parsedPrice > 0) {
-                    maxPrice = parsedPrice;
-                }
-            }
-
-            const preferences = partyData[2]?.trim() || '';
-
-            let frequency = user.searchPreferences.frequencyHours;
-            if (partyData[3]) {
-                const freqStr = partyData[3].trim();
-                const parsedFreq = parseFloat(freqStr);
-                if (!isNaN(parsedFreq) && parsedFreq >= MIN_SEARCH_INTERVAL && parsedFreq <= MAX_SEARCH_INTERVAL) {
-                    frequency = parsedFreq;
-                }
-            }
-
-            if (itemName) {
-                const searchParty = new SearchParty({
-                    userId: user._id,
-                    itemName,
-                    searchQuery: itemName,
-                    ...(maxPrice !== null && { maxPrice }),
-                    preferences,
-                    searchFrequency: frequency
-                });
-                await searchParty.save();
-
-                const priceMsg = maxPrice ? ` under ${maxPrice}` : '';
-                const frequencyMsg = ` (searches every ${frequency} hours)`;
-
-                return res.json({
-                    sessionId: session,
-                    type: 'message',
-                    message: `🎉 Search Party started, ${user.username}! I'll keep looking for "${itemName}"${priceMsg}${frequencyMsg} and notify you when I find great deals!`
-                });
-            }
-        }
-
-        // Check if AI wants to show cart
-        if (aiResponse.includes('SHOW_CART')) {
-            if (!user) {
-                return res.json({
-                    sessionId: session,
-                    type: 'message',
-                    message: "🔒 To view your cart, you need to be logged in! Please create an account to save your shopping cart."
-                });
-            }
-
-            const cart = await Cart.findOne({ userId: user._id });
-            if (!cart || cart.items.length === 0) {
-                return res.json({
-                    sessionId: session,
-                    type: 'message',
-                    message: `Your cart is empty, ${user.username}! 🛒\n\nWant to start shopping? Just tell me what you're looking for!`
-                });
-            }
-
-            const total = cart.items.reduce((sum, item) => sum + (item.price * item.quantity), 0);
-            const itemCount = cart.items.reduce((sum, item) => sum + item.quantity, 0);
-
-            return res.json({
-                sessionId: session,
-                type: 'cart_show',
-                message: `Woohoo, ${user.username}! Let's take a peek at your amazing cart! You have **${itemCount} item(s)** in your cart right now, totaling **$${total.toFixed(2)}**!`,
-                cart: cart
-            });
-        }
-
-        // Check if AI wants to remove cart items
-        if (aiResponse.includes('REMOVE_CART_ITEMS:')) {
-            const itemsToRemove = aiResponse.split('REMOVE_CART_ITEMS:')[1].trim().split(',').map(item => item.trim());
-            return res.json({ 
-                type: 'cart_command', 
-                action: 'remove_items', 
-                items: itemsToRemove,
-                message: `I'll remove those items from your cart! 🛒`
-            });
-        }
-
-        // Check if AI wants to keep only specific cart items
-        if (aiResponse.includes('KEEP_CART_ITEMS:')) {
-            const itemsToKeep = aiResponse.split('KEEP_CART_ITEMS:')[1].trim().split(',').map(item => item.trim());
-            return res.json({ 
-                type: 'cart_command', 
-                action: 'keep_only', 
-                items: itemsToKeep,
-                message: `Perfect! I'll keep only those items in your cart! 🛍️`
-            });
-        }
-
-        // Check if AI wants to clear cart
-        if (aiResponse.includes('CLEAR_CART')) {
-            return res.json({ 
-                type: 'cart_command', 
-                action: 'clear_cart',
-                message: `Clearing out your cart! 🧹 Your shopping cart is now empty.`
-            });
-        }
-
-        // Check if this is a product search query
-        const shouldSearch = isProductSearchQuery(message) && !aiResponse.includes('SEARCH:');
-
-        if (shouldSearch) {
-            const searchQuery = generateSearchQuery(message);
-            const displayMessage = `Searching for "${searchQuery}"... 🔍\n\nHere are some quick results! Want to specify your budget, brand, or other preferences for more tailored options?`;
-
-            const useQuickSearch = user ? user.searchPreferences.quickSearchMode : true;
-
-            if (useQuickSearch) {
-                const searchResults = await searchItem(searchQuery);
-                const { deals, totalValid } = await findBestDeals(searchResults, searchQuery, user?._id, session);
-
-                if (deals && deals.length > 0) {
-                    const recommendation = await getAIRecommendation(deals, searchQuery, user);
-                    const recommendationData = parseRecommendation(recommendation, deals);
-
-                    return res.json({
-                        sessionId: session,
-                        type: 'recommendation',
-                        message: displayMessage,
-                        searchQuery,
-                        deals: deals.slice(0, 6),
-                        recommendation: recommendationData,
-                        quickSearch: true
-                    });
-                } else {
-                    return res.json({
-                        sessionId: session,
-                        type: 'message',
-                        message: `Hmm, ${user ? user.username + ', ' : ''}couldn't find any deals for that. 🤔\n\nWant to try a different search or tell me more about what you're looking for?`
-                    });
-                }
-            }
-        }
-
-        // Check if AI wants to search
-        if (aiResponse.includes('SEARCH:')) {
-            const searchQuery = aiResponse.split('SEARCH:')[1].trim();
-            const displayMessage = aiResponse.split('SEARCH:')[0].trim() || `Searching for "${searchQuery}"... 🔍`;
-
-            const searchResults = await searchItem(searchQuery);
-            const { deals, totalValid } = await findBestDeals(searchResults, searchQuery, user?._id, session);
-
-            if (deals && deals.length > 0) {
-                const recommendation = await getAIRecommendation(deals, searchQuery, user);
-                const recommendationData = parseRecommendation(recommendation, deals);
-
-                return res.json({
-                    sessionId: session,
-                    type: 'recommendation',
-                    message: formatDisplayMessage(displayMessage),
-                    searchQuery,
-                    deals: deals.slice(0, 6),
-                    recommendation: recommendationData
-                });
-            } else {
-                return res.json({
-                    sessionId: session,
-                    type: 'message',
-                    message: `Hmm, ${user ? user.username + ', ' : ''}couldn't find any deals for that. 🤔\n\nWant to try a different search or adjust your requirements?`
-                });
-            }
-        }
-
-        // Regular response
-        res.json({
-            sessionId: session,
-            type: 'message',
-            message: aiResponse
-        });
-
+        const content = candidates[0]?.content?.parts?.[0]?.text || 'Sorry, I could not generate a response.';
+        return content;
     } catch (error) {
-        console.error('Chat error:', error.response?.data || error.message);
-        res.status(500).json({
-            error: 'Something went wrong',
-            details: error.response?.data?.error?.message || error.message
-        });
+        console.error('Gemini API Error:', error.response?.data || error.message);
+        throw new Error('Failed to generate a response from Gemini');
     }
-});
+}
 
-// Get user conversations
-app.get('/api/conversations', authenticateToken, async (req, res) => {
-    try {
-        if (!req.user) {
-            return res.status(401).json({ error: 'Authentication required' });
-        }
-
-        const conversations = await Conversation.find({ userId: req.user._id })
-            .sort({ updatedAt: -1 })
-            .select('sessionId messages createdAt updatedAt');
-
-        res.json(conversations);
-    } catch (error) {
-        console.error('Get conversations error:', error);
-        res.status(500).json({ error: 'Internal server error' });
-    }
-});
-
-// Get single conversation by session ID
-app.get('/api/conversations/:sessionId', authenticateToken, async (req, res) => {
-    try {
-        if (!req.user) {
-            return res.status(401).json({ error: 'Authentication required' });
-        }
-
-        const { sessionId } = req.params;
-        const conversation = await Conversation.findOne({
-            userId: req.user._id,
-            sessionId: sessionId
-        });
-
-        if (!conversation) {
-            return res.status(404).json({ error: 'Conversation not found' });
-        }
-
-        res.json(conversation);
-    } catch (error) {
-        console.error('Get conversation error:', error);
-        res.status(500).json({ error: 'Internal server error' });
-    }
-});
-
-// Get search parties
-app.get('/api/search-parties', authenticateToken, async (req, res) => {
-    try {
-        if (!req.user) {
-            return res.status(401).json({ error: 'Authentication required' });
-        }
-
-        const searchParties = await SearchParty.find({ userId: req.user._id })
-            .sort({ createdAt: -1 });
-
-        res.json(searchParties);
-    } catch (error) {
-        console.error('Get search parties error:', error);
-        res.status(500).json({ error: 'Internal server error' });
-    }
-});
-
-// Toggle search party active status
-app.put('/api/search-parties/:id/toggle', authenticateToken, async (req, res) => {
-    try {
-        const { id } = req.params;
-        const searchParty = await SearchParty.findOne({ _id: id, userId: req.user._id });
-
-        if (!searchParty) {
-            return res.status(404).json({ error: 'Search party not found' });
-        }
-
-        searchParty.isActive = !searchParty.isActive;
-        await searchParty.save();
-
-        res.json({
-            message: `Search party ${searchParty.isActive ? 'activated' : 'paused'}`,
-            searchParty
-        });
-    } catch (error) {
-        console.error('Toggle search party error:', error);
-        res.status(500).json({ error: 'Internal server error' });
-    }
-});
-
-// Update search party frequency
-app.put('/api/search-parties/:id/frequency', authenticateToken, async (req, res) => {
-    try {
-        const { id } = req.params;
-        const { frequencyHours } = req.body;
-
-        if (!frequencyHours || frequencyHours < MIN_SEARCH_INTERVAL || frequencyHours > MAX_SEARCH_INTERVAL) {
-            return res.status(400).json({
-                error: `Frequency must be between ${MIN_SEARCH_INTERVAL} and ${MAX_SEARCH_INTERVAL} hours`
-            });
-        }
-
-        const searchParty = await SearchParty.findOne({ _id: id, userId: req.user._id });
-
-        if (!searchParty) {
-            return res.status(404).json({ error: 'Search party not found' });
-        }
-
-        searchParty.searchFrequency = frequencyHours;
-        await searchParty.save();
-
-        res.json({
-            message: `Search frequency updated to every ${frequencyHours} hours`,
-            searchParty
-        });
-    } catch (error) {
-        console.error('Update search frequency error:', error);
-        res.status(500).json({ error: 'Internal server error' });
-    }
-});
-
-// Update search party details
-app.put('/api/search-parties/:id', authenticateToken, async (req, res) => {
-    try {
-        const { id } = req.params;
-        const { itemName, maxPrice, preferences, isActive } = req.body;
-
-        const searchParty = await SearchParty.findOne({ _id: id, userId: req.user._id });
-
-        if (!searchParty) {
-            return res.status(404).json({ error: 'Search party not found' });
-        }
-
-        if (itemName !== undefined) searchParty.itemName = itemName;
-        if (maxPrice !== undefined) searchParty.maxPrice = maxPrice;
-        if (preferences !== undefined) searchParty.preferences = preferences;
-        if (isActive !== undefined) searchParty.isActive = isActive;
-
-        await searchParty.save();
-
-        res.json({
-            message: 'Search party updated successfully',
-            searchParty
-        });
-    } catch (error) {
-        console.error('Update search party error:', error);
-        res.status(500).json({ error: 'Internal server error' });
-    }
-});
-
-// Delete search party
-app.delete('/api/search-parties/:id', authenticateToken, async (req, res) => {
-    try {
-        const { id } = req.params;
-        const searchParty = await SearchParty.findOne({ _id: id, userId: req.user._id });
-
-        if (!searchParty) {
-            return res.status(404).json({ error: 'Search party not found' });
-        }
-
-        await SearchParty.deleteOne({ _id: id });
-
-        res.json({
-            message: 'Search party deleted successfully'
-        });
-    } catch (error) {
-        console.error('Delete search party error:', error);
-        res.status(500).json({ error: 'Internal server error' });
-    }
-});
-
-// Format display message
+// Format AI Display Message
 function formatDisplayMessage(message) {
     if (!message || message.trim() === '') {
         return "Let me search for that! 🔍";
@@ -1676,7 +1029,7 @@ function formatDisplayMessage(message) {
     return message;
 }
 
-// Search function
+// Search function (SerpAPI / Google Shopping)
 async function searchItem(itemName) {
     try {
         const response = await axios.get(SERP_BASE_URL, {
@@ -1694,89 +1047,150 @@ async function searchItem(itemName) {
     }
 }
 
-// Function to generate a clean product URL slug from title
-function generateProductSlug(title, source) {
-    // Clean the title to create a URL-friendly slug
-    const slug = title
-        .toLowerCase()
-        .replace(/[^a-z0-9\s-]/g, '') // Remove special characters
-        .replace(/\s+/g, '-') // Replace spaces with hyphens
-        .replace(/-+/g, '-') // Replace multiple hyphens with single
-        .substring(0, 60) // Limit length
-        .replace(/^-|-$/g, ''); // Remove leading/trailing hyphens
+// Validate and enhance product link
+function ensureValidProductLink(originalLink, title, source) {
+    try {
+        if (!originalLink || typeof originalLink !== 'string' || originalLink.trim() === '' || originalLink === '#') {
+            console.warn(`⚠️ Invalid or empty product link for "${title}". Attempting to manufacture a valid URL for ${source}.`);
 
-    // Base URLs for different sources
-    const baseUrls = {
-        'amazon': 'https://amazon.com',
-        'amazon.com': 'https://amazon.com',
-        'ebay': 'https://ebay.com/itm',
-        'ebay.com': 'https://ebay.com/itm',
-        'walmart': 'https://walmart.com/ip',
-        'walmart.com': 'https://walmart.com/ip',
-        'best buy': 'https://bestbuy.com/site',
-        'bestbuy': 'https://bestbuy.com/site',
-        'bestbuy.com': 'https://bestbuy.com/site',
-        'newegg': 'https://newegg.com/p',
-        'newegg.com': 'https://newegg.com/p',
-        'target': 'https://target.com/p',
-        'target.com': 'https://target.com/p'
-    };
-
-    const sourceLower = source.toLowerCase().trim();
-
-    // Find matching base URL
-    let baseUrl = baseUrls[sourceLower];
-
-    // If no exact match, check if source contains known retailer
-    if (!baseUrl) {
-        for (const [key, url] of Object.entries(baseUrls)) {
-            if (sourceLower.includes(key)) {
-                baseUrl = url;
-                break;
+            if (!source) {
+                console.warn(`⚠️ No source provided for product "${title}", returning '#' as fallback.`);
+                return '#';
             }
+
+            const sourceLower = source.toLowerCase();
+
+            const baseUrls = {
+                'amazon': 'https://amazon.com',
+                'amazon.com': 'https://amazon.com',
+                'ebay': 'https://ebay.com/sch/i.html',
+                'ebay.com': 'https://ebay.com/sch/i.html',
+                'walmart': 'https://walmart.com/search',
+                'walmart.com': 'https://walmart.com/search',
+                'best buy': 'https://bestbuy.com/site/searchpage.jsp',
+                'bestbuy': 'https://bestbuy.com/site/searchpage.jsp',
+                'bestbuy.com': 'https://bestbuy.com/site/searchpage.jsp',
+                'newegg': 'https://newegg.com/p',
+                'newegg.com': 'https://newegg.com/p'
+            };
+
+            let baseUrl = baseUrls[sourceLower];
+
+            if (!baseUrl) {
+                for (const [key, url] of Object.entries(baseUrls)) {
+                    if (sourceLower.includes(key)) {
+                        baseUrl = url;
+                        break;
+                    }
+                }
+            }
+
+            if (!baseUrl) {
+                console.warn(`⚠️ Could not determine base URL for source "${source}". Using '#' as fallback.`);
+                return '#';
+            }
+
+            const formattedQuery = encodeURIComponent(title.trim());
+            let manufacturedUrl;
+
+            if (sourceLower.includes('amazon')) {
+                manufacturedUrl = `${baseUrl}/s?k=${formattedQuery}`;
+            } else if (sourceLower.includes('ebay')) {
+                manufacturedUrl = `${baseUrl}?_nkw=${formattedQuery}`;
+            } else if (sourceLower.includes('walmart')) {
+                manufacturedUrl = `${baseUrl}?query=${formattedQuery}`;
+            } else if (sourceLower.includes('best')) {
+                manufacturedUrl = `${baseUrl}?st=${formattedQuery}`;
+            } else {
+                manufacturedUrl = `${baseUrl}/${formattedQuery}`;
+            }
+
+            console.log(`✅ Manufactured new product link for "${title}": ${manufacturedUrl}`);
+            return manufacturedUrl;
         }
-    }
 
-    // Default to a generic URL if no match found
-    if (!baseUrl) {
-        baseUrl = `https://${sourceLower.replace(/\s+/g, '')}.com`;
-    }
+        const url = new URL(originalLink);
 
-    // Construct the full URL
-    return `${baseUrl}/${slug}`;
+        if (!url.protocol || !url.hostname) {
+            console.warn(`⚠️ Invalid URL structure detected for "${title}". Attempting to repair.`);
+            const hostname = url.hostname || 'example.com';
+            const protocol = url.protocol || 'https:';
+            url.protocol = protocol;
+            if (!url.hostname) {
+                url.hostname = hostname;
+            }
+            console.log(`✅ Repaired URL: ${url.toString()}`);
+            return url.toString();
+        }
+
+        console.log(`✅ Valid product link for "${title}": ${originalLink}`);
+        return originalLink;
+    } catch (error) {
+        console.error(`❌ Error validating product link for "${title}":`, error.message);
+
+        if (!source) {
+            return '#';
+        }
+
+        const sourceLower = source.toLowerCase();
+        const formattedQuery = encodeURIComponent(title.trim());
+
+        if (sourceLower.includes('amazon')) {
+            return `https://amazon.com/s?k=${formattedQuery}`;
+        } else if (sourceLower.includes('ebay')) {
+            return `https://ebay.com/sch/i.html?_nkw=${formattedQuery}`;
+        } else if (sourceLower.includes('walmart')) {
+            return `https://walmart.com/search?query=${formattedQuery}`;
+        } else if (sourceLower.includes('best')) {
+            return `https://bestbuy.com/site/searchpage.jsp?st=${formattedQuery}`;
+        }
+
+        return '#';
+    }
 }
 
-// Function to validate and fix product links
-function ensureValidProductLink(link, title, source) {
-    // Check if link is missing, invalid, or just a placeholder
-    if (!link || link === '#' || link.trim() === '' ||
-        link.includes('placeholder') || link.length < 10) {
-        console.log(`⚠️  Invalid link detected for "${title}" from ${source}, manufacturing new link...`);
-        return generateProductSlug(title, source);
+// Add affiliate code to product links
+function addAffiliateLink(link, source) {
+    try {
+        if (!link || link === '#') {
+            console.warn('⚠️ Cannot add affiliate to invalid link:', link);
+            return link;
+        }
+
+        const url = new URL(link);
+        const hostname = url.hostname.toLowerCase();
+
+        if (AFFILIATE_CONFIGS.amazon.enabled &&
+            AFFILIATE_CONFIGS.amazon.domains.some(domain => hostname.includes(domain))) {
+            url.searchParams.set('tag', AFFILIATE_CONFIGS.amazon.tag);
+            console.log(`🔗 Added Amazon affiliate tag to link`);
+            return url.toString();
+        }
+
+        if (AFFILIATE_CONFIGS.ebay.enabled &&
+            AFFILIATE_CONFIGS.ebay.domains.some(domain => hostname.includes(domain))) {
+            url.searchParams.set('campid', AFFILIATE_CONFIGS.ebay.campaignId);
+            console.log(`🔗 Added eBay affiliate campaign ID to link`);
+            return url.toString();
+        }
+
+        if (AFFILIATE_CONFIGS.walmart.enabled &&
+            AFFILIATE_CONFIGS.walmart.domains.some(domain => hostname.includes(domain))) {
+            url.searchParams.set('publisherId', AFFILIATE_CONFIGS.walmart.publisherId);
+            console.log(`🔗 Added Walmart publisher ID to link`);
+            return url.toString();
+        }
+
+        console.log(`ℹ️ No affiliate configuration matched for host: ${hostname}`);
+        return link;
+    } catch (error) {
+        console.error('Error adding affiliate to link:', error.message);
+        return link;
     }
-
-    // Check if link is relative (doesn't start with http)
-    if (!link.startsWith('http')) {
-        console.log(`⚠️  Relative link detected for "${title}", converting to absolute...`);
-
-        // Try to determine the domain from source
-        const sourceLower = source.toLowerCase();
-        let domain = 'amazon.com'; // default
-
-        if (sourceLower.includes('ebay')) domain = 'ebay.com';
-        else if (sourceLower.includes('walmart')) domain = 'walmart.com';
-        else if (sourceLower.includes('best buy') || sourceLower.includes('bestbuy')) domain = 'bestbuy.com';
-        else if (sourceLower.includes('newegg')) domain = 'newegg.com';
-        else if (sourceLower.includes('target')) domain = 'target.com';
-        else if (sourceLower.includes('amazon')) domain = 'amazon.com';
-
-        return `https://${domain}${link}`;
-    }
-
-    return link;
 }
 
 // Find best deals with affiliate tracking
+// Amazon (from PA-API) is treated as the primary source, other stores are secondary
 async function findBestDeals(results, searchQuery = '', userId = null, sessionId = null) {
     if (!results || !results.shopping_results) {
         return { deals: null, totalValid: null };
@@ -1788,25 +1202,36 @@ async function findBestDeals(results, searchQuery = '', userId = null, sessionId
     for (const item of shoppingResults) {
         if (!item.price) continue;
 
-        const priceStr = (typeof item.price === 'string') ? item.price.replace(/[$,]/g, '') : ('' + item.price);
+        const priceStr =
+            typeof item.price === 'string'
+                ? item.price.replace(/[$,]/g, '')
+                : String(item.price);
         const price = parseFloat(priceStr);
 
         if (isNaN(price)) continue;
 
-        const imageUrl = item.thumbnail || item.image || (item.images && item.images[0] && item.images[0].src) || (item.product && item.product.thumbnail) || null;
-        const originalLink = item.link || item.url || (item.product && item.product.link) || '#';
+        const imageUrl =
+            item.thumbnail ||
+            item.image ||
+            (item.images && item.images[0] && item.images[0].src) ||
+            (item.product && item.product.thumbnail) ||
+            null;
+
+        const originalLink =
+            item.link ||
+            item.url ||
+            (item.product && item.product.link) ||
+            '#';
+
         const source = item.source || item.merchant || item.store || 'Unknown';
         const title = item.title || 'Unknown Product';
 
-        // ✅ ENSURE VALID LINK - manufacture if missing/invalid
         const validLink = ensureValidProductLink(originalLink, title, source);
 
-        // ✅ ADD AFFILIATE CODE DIRECTLY TO THE VALID LINK
         const affiliateLink = addAffiliateLink(validLink, source);
 
         console.log(`🔗 Product: "${title.substring(0, 50)}..." → ${affiliateLink}`);
 
-        // OPTIONAL: Still track clicks in database for analytics
         if (userId || sessionId) {
             try {
                 const tracking = new ClickTracking({
@@ -1827,10 +1252,10 @@ async function findBestDeals(results, searchQuery = '', userId = null, sessionId
         }
 
         validResults.push({
-            title: title,
-            price: price,
-            source: source,
-            link: affiliateLink, // ✅ DIRECT AFFILIATE LINK WITH VALID URL
+            title,
+            price,
+            source,
+            link: affiliateLink,
             image: imageUrl,
             rating: item.rating || 'N/A',
             reviews: item.reviews || 'N/A'
@@ -1841,10 +1266,21 @@ async function findBestDeals(results, searchQuery = '', userId = null, sessionId
         return { deals: null, totalValid: null };
     }
 
-    validResults.sort((a, b) => a.price - b.price);
+    const amazonResults = validResults.filter((d) =>
+        d.source && d.source.toLowerCase().includes('amazon')
+    );
+    const otherResults = validResults.filter(
+        (d) => !d.source || !d.source.toLowerCase().includes('amazon')
+    );
+
+    amazonResults.sort((a, b) => a.price - b.price);
+    otherResults.sort((a, b) => a.price - b.price);
+
+    const orderedResults =
+        amazonResults.length > 0 ? [...amazonResults, ...otherResults] : otherResults;
 
     return {
-        deals: validResults.slice(0, 10),
+        deals: orderedResults.slice(0, 10),
         totalValid: validResults.length
     };
 }
@@ -1852,402 +1288,351 @@ async function findBestDeals(results, searchQuery = '', userId = null, sessionId
 // Get AI recommendation
 async function getAIRecommendation(deals, searchQuery, user) {
     const dealsText = deals.map((deal, index) =>
-        `${index + 1}. ${deal.title} - ${deal.price.toFixed(2)} from ${deal.source}${deal.rating !== 'N/A' ? ` (Rating: ${deal.rating}, ${deal.reviews} reviews)` : ''}`
+        `${index + 1}. ${deal.title} - ${deal.price.toFixed(2)} ${deal.source ? `from ${deal.source}` : ''}${deal.rating && deal.rating !== 'N/A' ? ` (Rating: ${deal.rating}, ${deal.reviews} reviews)` : ''}`
     ).join('\n');
 
-    const userContext = user ? `\n\nYou're making this recommendation for ${user.username}. Make it personal and friendly!` : '';
+    const userContext = user ? `\n\nYou're making this recommendation for ${user.username || user.email}. Consider their preferences:\n${buildUserPreferencesPrompt(user)}\n${buildSearchPreferencesPrompt(user)}` : '';
 
-    const recommendPrompt = `Based on these search results for "${searchQuery}", recommend THE BEST SINGLE OPTION and explain why in a friendly, formatted way.${userContext}
+    const prompt = `
+You are a shopping assistant AI helping a user find the best deals.
 
+The user searched for: "${searchQuery}"
+
+Here are the top deals we found:
 ${dealsText}
 
-Consider: value for money (not just cheapest), ratings, reviews, and store reliability.
+${userContext}
 
-Format your response with:
-- **Bold** for the key reasons
-- Bullet points if listing multiple benefits
-- Keep it enthusiastic and conversational
-- Keep it SHORT - 2-3 sentences max
-- ${user ? `Address ${user.username} personally if appropriate` : 'Be generally friendly'}
+Please:
+1. Briefly compare these options.
+2. Explain which 1-2 deals are the best value and why.
+3. Call out any trade-offs (price vs quality vs shipping vs brand).
+4. Make a clear recommendation in plain language.
 
-Respond with: RECOMMEND: [number]|[your formatted explanation]`;
+Avoid repeating all details; focus on useful comparisons and practical advice.
+`;
 
     try {
-        const response = await axios.post(
-            `${GEMINI_URL}?key=${GOOGLE_API_KEY}`,
-            {
-                contents: [
-                    {
-                        role: 'user',
-                        parts: [{ text: recommendPrompt }]
-                    }
-                ]
-            },
-            {
-                headers: {
-                    'Content-Type': 'application/json'
+        const aiResponse = await callGeminiAPI(prompt);
+        return aiResponse;
+    } catch (error) {
+        console.error('AI recommendation error:', error);
+        return 'I tried to analyze the deals, but there was an error generating a detailed recommendation. You can still review the top deals above.';
+    }
+}
+
+// AI-powered chat route
+app.post('/api/chat', async (req, res) => {
+    try {
+        const { message, searchQuery, sessionId: clientSessionId } = req.body;
+        const userId = req.userId;
+
+        if (!message && !searchQuery) {
+            return res.status(400).json({ error: 'Message or search query is required' });
+        }
+
+        let user = null;
+        if (userId) {
+            user = await User.findById(userId).select('-password');
+        }
+
+        let session = clientSessionId;
+        if (!session) {
+            session = generateSessionId(req);
+        }
+
+        if (!conversationHistory.has(session)) {
+            conversationHistory.set(session, []);
+        }
+
+        const sessionHistory = conversationHistory.get(session);
+
+        sessionHistory.push({ role: 'user', content: message });
+
+        const aiPrompt = generateAIPrompt(message, searchQuery, user, sessionHistory);
+
+        let aiResponse = await callGeminiAPI(aiPrompt);
+
+        let shouldSearch = false;
+        let extractedSearchQuery = searchQuery;
+
+        if (aiResponse.includes('SEARCH:')) {
+            shouldSearch = true;
+            extractedSearchQuery = aiResponse.split('SEARCH:')[1].trim();
+            aiResponse = aiResponse.split('SEARCH:')[0].trim();
+        }
+
+        sessionHistory.push({ role: 'assistant', content: aiResponse });
+        conversationHistory.set(session, sessionHistory);
+
+        let deals = null;
+        let totalValid = 0;
+        let aiDealSummary = null;
+
+        if (shouldSearch && extractedSearchQuery) {
+            const searchResults = await searchAllSources(extractedSearchQuery);
+            const result = await findBestDeals(searchResults, extractedSearchQuery, user?._id, session);
+            deals = result.deals;
+            totalValid = result.totalValid;
+
+            if (deals && deals.length > 0) {
+                aiDealSummary = await getAIRecommendation(deals, extractedSearchQuery, user);
+            }
+        } else if (searchQuery) {
+            const userPrefersAutoSearch = user?.searchPreferences?.autoSearchOnOpen ?? true;
+
+            if (userPrefersAutoSearch) {
+                const searchResults = await searchAllSources(searchQuery);
+                const { deals: foundDeals, totalValid: foundTotalValid } = await findBestDeals(searchResults, searchQuery, user?._id, session);
+
+                if (foundDeals && foundDeals.length > 0) {
+                    deals = foundDeals;
+                    totalValid = foundTotalValid;
+                    aiDealSummary = await getAIRecommendation(deals, searchQuery, user);
                 }
             }
-        );
+        }
 
-        let recommendation = response.data.candidates[0].content.parts[0].text;
-        recommendation = recommendation.replace(/\*\*\*/g, '**');
-        return recommendation;
+        const displayMessage = formatDisplayMessage(aiResponse);
+
+        res.json({
+            aiResponse: displayMessage,
+            sessionId: session,
+            deals,
+            totalValid,
+            aiDealSummary
+        });
     } catch (error) {
-        console.error('Recommendation error:', error.message);
-        return null;
-    }
-}
-
-// Parse recommendation
-function parseRecommendation(recommendation, deals) {
-    if (!recommendation || !recommendation.includes('RECOMMEND:')) {
-        return {
-            deal: deals[0],
-            reason: '**Great choice!** ✨\n\nThis option offers the **best value** based on:\n- Competitive pricing\n- Good availability\n- Reliable seller'
-        };
-    }
-
-    const parts = recommendation.split('RECOMMEND:')[1].split('|');
-    const recommendedIndex = parseInt(parts[0].trim()) - 1;
-    let reason = parts[1]?.trim() || '**Great choice!** This is an excellent option! ✨';
-
-    if (recommendedIndex >= 0 && recommendedIndex < deals.length) {
-        return {
-            deal: deals[recommendedIndex],
-            reason: reason
-        };
-    }
-
-    return {
-        deal: deals[0],
-        reason: reason
-    };
-}
-
-// Function to add search party results to cart
-async function addSearchPartyResultsToCart(userId, searchParty, deals) {
-    try {
-        let cart = await Cart.findOne({ userId: userId });
-
-        if (!cart) {
-            cart = new Cart({ userId: userId, items: [] });
-        }
-
-        let addedCount = 0;
-
-        for (const deal of deals.slice(0, 3)) { // Add top 3 deals
-            const productId = Buffer.from(`${deal.title}-${deal.source}`).toString('base64').slice(0, 20);
-
-            // Check if already in cart
-            const existingItem = cart.items.find(item =>
-                item.productId === productId &&
-                item.source === deal.source
-            );
-
-            if (!existingItem) {
-                cart.items.push({
-                    productId: productId,
-                    title: deal.title,
-                    price: deal.price,
-                    quantity: 1,
-                    source: deal.source,
-                    link: deal.link,
-                    image: deal.image,
-                    rating: deal.rating,
-                    reviews: deal.reviews,
-                    inStock: true,
-                    lastStockCheck: new Date(),
-                    addedAt: new Date()
-                });
-                addedCount++;
-            }
-        }
-
-        if (addedCount > 0) {
-            cart.updatedAt = new Date();
-            await cart.save();
-            console.log(`🛒 Added ${addedCount} items from search party to cart`);
-
-            // Notify user
-            const user = await User.findById(userId);
-            if (user && user.searchPreferences.notifyOnDeals) {
-                await sendCartUpdateNotification(user, searchParty, addedCount);
-            }
-        }
-
-        return addedCount;
-    } catch (error) {
-        console.error('Error adding search party results to cart:', error);
-        return 0;
-    }
-}
-
-// Reset session endpoint
-app.post('/api/reset', authenticateToken, async (req, res) => {
-    try {
-        const { sessionId } = req.body;
-        const user = req.user;
-
-        if (user && sessionId) {
-            await Conversation.deleteOne({ userId: user._id, sessionId: sessionId });
-        } else if (sessionId) {
-            activeSessions.delete(sessionId);
-        }
-
-        res.json({ message: 'Session reset successfully' });
-    } catch (error) {
-        console.error('Reset session error:', error);
-        res.status(500).json({ error: 'Internal server error' });
+        console.error('Chat error:', error);
+        res.status(500).json({ error: 'Chat processing failed' });
     }
 });
 
-// Health check
-app.get('/api/health', (req, res) => {
-    res.json({
-        status: 'ok',
-        message: 'Son of Anton API is running!',
-        searchConfig: {
-            frequency: SEARCH_FREQUENCY_MINUTES ?
-                `${SEARCH_FREQUENCY_MINUTES} minutes` :
-                `${SEARCH_FREQUENCY_HOURS} hours`,
-            nextRunIn: `${VALIDATED_CRON_INTERVAL / (60 * 1000)} minutes`
-        },
-        affiliateConfig: {
-            amazon: AFFILIATE_CONFIGS.amazon.enabled,
-            ebay: AFFILIATE_CONFIGS.ebay.enabled,
-            walmart: AFFILIATE_CONFIGS.walmart.enabled
-        },
-        features: {
-            cart: true,
-            stockChecking: true,
-            searchParties: true,
-            cartCommands: true
+// Separate quick search endpoint
+app.post('/api/search', async (req, res) => {
+    try {
+        const { searchQuery } = req.body;
+        const userId = req.userId;
+
+        if (!searchQuery) {
+            return res.status(400).json({ error: 'Search query is required' });
         }
-    });
+
+        let user = null;
+        if (userId) {
+            user = await User.findById(userId).select('-password');
+        }
+
+        const message = `User wants to search for: "${searchQuery}". Provide a short helpful response explaining what you're going to look for and what kind of deals you'll try to find. Use "SEARCH: ${searchQuery}" if appropriate.`;
+
+        const session = generateSessionId(req);
+
+        const aiPrompt = generateAIPrompt(message, searchQuery, user, []);
+
+        let aiResponse = await callGeminiAPI(aiPrompt);
+
+        let shouldSearch = aiResponse.includes('SEARCH:');
+
+        let extractedSearchQuery = searchQuery;
+        if (shouldSearch) {
+            extractedSearchQuery = aiResponse.split('SEARCH:')[1].trim();
+            aiResponse = aiResponse.split('SEARCH:')[0].trim();
+        }
+
+        if (!shouldSearch) {
+            shouldSearch = true;
+        }
+
+        let deals = null;
+        let totalValid = 0;
+        let aiDealSummary = null;
+
+        if (shouldSearch && extractedSearchQuery) {
+            const searchResults = await searchAllSources(extractedSearchQuery);
+            const result = await findBestDeals(searchResults, extractedSearchQuery, user?._id, session);
+            deals = result.deals;
+            totalValid = result.totalValid;
+
+            if (deals && deals.length > 0) {
+                aiDealSummary = await getAIRecommendation(deals, extractedSearchQuery, user);
+            }
+        }
+
+        const displayMessage = formatDisplayMessage(aiResponse);
+
+        res.json({
+            aiResponse: displayMessage,
+            deals,
+            totalValid,
+            aiDealSummary
+        });
+    } catch (error) {
+        console.error('Search error:', error);
+        res.status(500).json({ error: 'Search failed' });
+    }
 });
 
-// Search Party Cron Job
-async function runSearchParties() {
+// Route to handle direct shopping search via UI
+app.post('/api/shopping-search', async (req, res) => {
     try {
-        console.log('🕐 CRON JOB: Starting Search Party execution...');
+        const { searchQuery, userMessage, aiEnabled } = req.body;
+        const userId = req.userId;
 
-        const activeParties = await SearchParty.find({ isActive: true });
+        if (!searchQuery && !userMessage) {
+            return res.status(400).json({ error: 'Either search query or user message is required' });
+        }
 
-        console.log(`🔍 CRON JOB: Found ${activeParties.length} active search parties`);
+        let user = null;
+        if (userId) {
+            user = await User.findById(userId).select('-password');
+        }
 
-        if (activeParties.length > 0) {
-            console.log('📋 ACTIVE SEARCH PARTIES:');
-            activeParties.forEach((party, index) => {
-                const userFrequency = party.searchFrequency || SEARCH_FREQUENCY_HOURS;
-                console.log(`   ${index + 1}. "${party.itemName}" - User: ${party.userId} - Frequency: ${userFrequency}h - Last Searched: ${party.lastSearched}`);
+        const session = generateSessionId(req);
+
+        let aiResponse = null;
+        let displayMessage = null;
+
+        if (aiEnabled && userMessage) {
+            const aiPrompt = generateAIPrompt(userMessage, searchQuery, user, []);
+            aiResponse = await callGeminiAPI(aiPrompt);
+
+            let shouldSearch = false;
+            let extractedSearchQuery = searchQuery;
+
+            if (aiResponse.includes('SEARCH:')) {
+                shouldSearch = true;
+                extractedSearchQuery = aiResponse.split('SEARCH:')[1].trim();
+                displayMessage = aiResponse.split('SEARCH:')[0].trim();
+            } else {
+                shouldSearch = true;
+                extractedSearchQuery = searchQuery || userMessage;
+                displayMessage = aiResponse;
+            }
+
+            const searchResults = await searchAllSources(extractedSearchQuery);
+            const { deals, totalValid } = await findBestDeals(searchResults, extractedSearchQuery, user?._id, session);
+            let aiDealSummary = null;
+
+            if (deals && deals.length > 0) {
+                aiDealSummary = await getAIRecommendation(deals, extractedSearchQuery, user);
+            }
+
+            return res.json({
+                aiResponse: formatDisplayMessage(displayMessage || aiResponse),
+                deals,
+                totalValid,
+                aiDealSummary
             });
         } else {
-            console.log('   No active search parties found');
+            const searchResults = await searchAllSources(searchQuery || userMessage);
+            const { deals, totalValid } = await findBestDeals(searchResults, searchQuery || userMessage, user?._id, session);
+            const displayMessage = `Here are some deals I found for "${searchQuery || userMessage}". Want me to help compare them or suggest the best one?`;
+
+            let aiDealSummary = null;
+
+            if (deals && deals.length > 0) {
+                aiDealSummary = await getAIRecommendation(deals, searchQuery || userMessage, user);
+            }
+
+            return res.json({
+                aiResponse: formatDisplayMessage(displayMessage),
+                deals,
+                totalValid,
+                aiDealSummary
+            });
+        }
+    } catch (error) {
+        console.error('Shopping search error:', error);
+        res.status(500).json({ error: 'Shopping search failed' });
+    }
+});
+
+// Track clicks on product links
+app.post('/api/click', async (req, res) => {
+    try {
+        const { trackingId } = req.body;
+
+        if (!trackingId) {
+            return res.status(400).json({ error: 'Tracking ID is required' });
         }
 
+        await ClickTracking.findByIdAndUpdate(trackingId, {
+            $set: { clicked: true }
+        });
+
+        res.json({ message: 'Click tracked successfully' });
+    } catch (error) {
+        console.error('Click tracking error:', error);
+        res.status(500).json({ error: 'Failed to track click' });
+    }
+});
+
+// Scheduled search job
+async function runScheduledSearches() {
+    try {
+        console.log('⏰ Running scheduled searches...');
+
+        const now = new Date();
+
+        const activeParties = await Party.find({ active: true });
+
         for (const party of activeParties) {
-            const userFrequencyHours = party.searchFrequency || SEARCH_FREQUENCY_HOURS;
-            const userFrequencyMs = userFrequencyHours * 60 * 60 * 1000;
+            const lastRun = party.lastRunAt || party.createdAt;
+            const hoursSinceLastRun = (now - lastRun) / (1000 * 60 * 60);
 
-            const timeSinceLastSearch = Date.now() - party.lastSearched.getTime();
+            const userFrequencyHours = party.searchFrequencyHours || 12;
 
-            if (timeSinceLastSearch < userFrequencyMs) {
-                const hoursSince = Math.round(timeSinceLastSearch / (60 * 60 * 1000));
-                console.log(`⏭️  Skipping "${party.itemName}" - searched ${hoursSince}h ago (less than ${userFrequencyHours}h)`);
+            if (hoursSinceLastRun < userFrequencyHours) {
                 continue;
             }
 
             console.log(`🔎 Searching for: "${party.itemName}" (User: ${party.userId}, Frequency: ${userFrequencyHours}h)`);
 
-            const results = await searchItem(party.searchQuery);
+            const results = await searchAllSources(party.searchQuery);
             const { deals } = await findBestDeals(results, party.searchQuery, party.userId, null);
 
             if (deals && deals.length > 0) {
-                const filteredDeals = party.maxPrice
-                    ? deals.filter(deal => deal.price <= party.maxPrice)
-                    : deals;
+                const user = await User.findById(party.userId).select('-password');
+                const aiSummary = await getAIRecommendation(deals, party.searchQuery, user);
 
-                console.log(`   Found ${deals.length} total deals, ${filteredDeals.length} after price filtering`);
+                const notification = new PartyNotification({
+                    partyId: party._id,
+                    userId: party.userId,
+                    deals: deals,
+                    searchQuery: party.searchQuery,
+                    notificationMessage: `We found new deals for your party: "${party.itemName}"`,
+                    notificationChannel: party.notificationChannel || 'in_app',
+                    aiSummary: aiSummary
+                });
 
-                if (filteredDeals.length > 0) {
-                    const user = await User.findById(party.userId);
+                await notification.save();
 
-                    // Add to cart automatically
-                    const addedCount = await addSearchPartyResultsToCart(party.userId, party, filteredDeals);
-
-                    if (addedCount > 0) {
-                        console.log(`🛒 Automatically added ${addedCount} items to cart from search party`);
-                    }
-
-                    if (user && user.searchPreferences.notifyOnDeals) {
-                        const emailSent = await sendDealEmail(user, party, filteredDeals.slice(0, 3));
-
-                        if (emailSent) {
-                            console.log(`📧 Email notification sent to ${user.email}`);
-                        } else {
-                            console.log(`❌ Failed to send email to ${user.email}`);
-                        }
-                    } else if (!user) {
-                        console.log(`❌ User not found for ID: ${party.userId}`);
-                    } else {
-                        console.log(`📧 Email notifications disabled for user ${user.email}`);
-                    }
-
-                    const newResults = filteredDeals.slice(0, 3).map(deal => ({
-                        title: deal.title,
-                        price: deal.price,
-                        source: deal.source,
-                        link: deal.link,
-                        image: deal.image,
-                        rating: deal.rating,
-                        reviews: deal.reviews,
-                        foundAt: new Date()
-                    }));
-
-                    party.foundResults.push(...newResults);
-                    party.lastSearched = new Date();
-                    await party.save();
-
-                    console.log(`✅ Saved ${newResults.length} new deals for "${party.itemName}"`);
-                } else {
-                    console.log(`❌ No deals found within price limit for "${party.itemName}"`);
-                }
-            } else {
-                console.log(`❌ No deals found for "${party.itemName}"`);
+                console.log(`✅ Notification created for user ${party.userId} and party "${party.itemName}".`);
             }
 
-            await new Promise(resolve => setTimeout(resolve, 2000));
+            party.lastRunAt = now;
+            await party.save();
         }
-
-        console.log('✅ CRON JOB: Search Party execution completed');
     } catch (error) {
-        console.error('❌ CRON JOB: Search party cron error:', error);
+        console.error('Scheduled search error:', error);
     }
 }
 
-// Cart Stock Check Cron Job
-async function checkCartItemsStock() {
-    try {
-        console.log('🔄 CRON JOB: Checking cart items stock...');
-
-        const carts = await Cart.find({
-            'items.0': { $exists: true } // Only carts with items
-        }).populate('userId');
-
-        console.log(`📦 Found ${carts.length} carts with items to check`);
-
-        for (const cart of carts) {
-            for (const item of cart.items) {
-                // Check stock if it hasn't been checked in the last hour
-                const timeSinceLastCheck = Date.now() - item.lastStockCheck.getTime();
-                if (timeSinceLastCheck > 60 * 60 * 1000) { // 1 hour
-                    const wasInStock = item.inStock;
-                    const isInStock = await checkProductStock(item.link, item.source);
-
-                    item.inStock = isInStock;
-                    item.lastStockCheck = new Date();
-
-                    // Record stock check
-                    const stockCheck = new StockCheck({
-                        cartItemId: item._id,
-                        productTitle: item.title,
-                        inStock: isInStock,
-                        price: item.price,
-                        source: item.source
-                    });
-                    await stockCheck.save();
-
-                    // Notify user if stock status changed
-                    if (wasInStock !== isInStock && cart.userId && cart.userId.searchPreferences.notifyOnDeals) {
-                        await sendStockNotification(cart.userId, item, wasInStock, isInStock);
-                    }
-
-                    console.log(`📦 Stock check: "${item.title.substring(0, 30)}..." - ${isInStock ? 'IN STOCK' : 'OUT OF STOCK'}`);
-                }
-            }
-
-            cart.updatedAt = new Date();
-            await cart.save();
-        }
-
-        console.log('✅ CRON JOB: Cart stock check completed');
-    } catch (error) {
-        console.error('❌ CRON JOB: Cart stock check error:', error);
+// Start the scheduler
+function startScheduler() {
+    if (!validateSearchFrequency()) {
+        console.error("❌ Scheduler not started due to invalid search frequency configuration.");
+        return;
     }
+
+    console.log(`⏰ Starting scheduled search job. Frequency: every ${SEARCH_FREQUENCY_MINUTES || (SEARCH_FREQUENCY_HOURS * 60)} minutes.`);
+
+    runScheduledSearches();
+
+    setInterval(runScheduledSearches, CRON_INTERVAL);
 }
 
-module.exports = {
-    sendDealEmail,
-    formatDisplayMessage,
-    searchItem,
-    findBestDeals,
-    getAIRecommendation,
-    parseRecommendation,
-    addAffiliateLink,
-    createTrackedLink,
-    generateProductSlug,
-    ensureValidProductLink,
-    Cart,
-    StockCheck,
-    checkProductStock,
-    addSearchPartyResultsToCart,
-    isCartManagementCommand,
-    parseCartCommand
-};
+startScheduler();
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-    console.log(`🚀 Son of Anton API running on port ${PORT}`);
-    displaySearchConfiguration();
-    displayAffiliateConfiguration();
-    console.log(`📡 Endpoints:`);
-    console.log(`   POST /api/register - Create account`);
-    console.log(`   POST /api/login - Login`);
-    console.log(`   POST /api/chat - Send messages`);
-    console.log(`   GET /api/conversations - Get conversation history`);
-    console.log(`   GET /api/search-parties - Get search parties`);
-    console.log(`   PUT /api/search-parties/:id/toggle - Toggle search party`);
-    console.log(`   PUT /api/search-parties/:id/frequency - Update search frequency`);
-    console.log(`   PUT /api/search-parties/:id - Update search party details`);
-    console.log(`   DELETE /api/search-parties/:id - Delete search party`);
-    console.log(`   PUT /api/user/preferences - Update user preferences`);
-    console.log(`   GET /api/search-config - Get search configuration`);
-    console.log(`   GET /api/redirect/:trackingId - Affiliate redirect (with tracking)`);
-    console.log(`   GET /api/affiliate/stats - Get affiliate statistics`);
-    console.log(`   POST /api/reset - Reset conversation`);
-    console.log(`   GET /api/health - Health check`);
-    console.log(`   🛒 CART ENDPOINTS:`);
-    console.log(`   GET /api/cart - Get user cart`);
-    console.log(`   POST /api/cart/add - Add item to cart`);
-    console.log(`   PUT /api/cart/update/:itemId - Update cart item quantity`);
-    console.log(`   DELETE /api/cart/remove/:itemId - Remove item from cart`);
-    console.log(`   DELETE /api/cart/clear - Clear cart`);
-    console.log(`   POST /api/cart/keep-only - Keep only specific items`);
-    console.log(`   POST /api/cart/check-stock - Check stock for cart items`);
-});
-
-// Setup Search Party cron job
-console.log(`⏰ Setting up Search Party cron job to run every ${VALIDATED_CRON_INTERVAL / (60 * 1000)} minutes`);
-
-setInterval(() => {
-    console.log(`\n🔄 CRON JOB: Scheduled Search Party execution started at ${new Date().toISOString()}`);
-    runSearchParties();
-}, VALIDATED_CRON_INTERVAL);
-
-// Setup Cart Stock Check cron job
-console.log(`⏰ Setting up Cart Stock Check cron job to run every hour`);
-
-setInterval(() => {
-    console.log(`\n🔄 CRON JOB: Scheduled Cart Stock Check at ${new Date().toISOString()}`);
-    checkCartItemsStock();
-}, 60 * 60 * 1000); // Check every hour
-
-// Run immediately on startup
-setTimeout(() => {
-    console.log(`\n🚀 INITIAL CRON JOB: Running initial Search Party check at ${new Date().toISOString()}`);
-    runSearchParties();
-
-    console.log(`\n🚀 INITIAL CRON JOB: Running initial Cart Stock Check at ${new Date().toISOString()}`);
-    checkCartItemsStock();
-}, 5000);
+const PORT = process.env.PORT || 5000;
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));

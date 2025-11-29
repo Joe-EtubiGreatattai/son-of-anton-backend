@@ -1,0 +1,52 @@
+#!/usr/bin/expect
+
+set timeout 30
+set host "31.42.188.106"
+set user "root"
+set password "U:.Qw33teC8hS2"
+set file "api.sonofanton.live.conf"
+
+# Step 1: Upload file using SCP
+spawn scp -o StrictHostKeyChecking=no $file $user@$host:/root/$file
+expect {
+    "password:" {
+        send "$password\r"
+    }
+    timeout {
+        puts "SCP timed out"
+        exit 1
+    }
+}
+expect eof
+
+# Step 2: SSH in to apply configuration
+spawn ssh -o StrictHostKeyChecking=no $user@$host
+expect {
+    "password:" {
+        send "$password\r"
+    }
+    timeout {
+        puts "SSH timed out"
+        exit 1
+    }
+}
+
+expect {
+    "root@" { }
+    "#" { }
+    "$" { }
+}
+
+# Move file to sites-available
+send "mv /root/$file /etc/nginx/sites-available/$file\r"
+# Create symlink (force if exists)
+send "ln -sf /etc/nginx/sites-available/$file /etc/nginx/sites-enabled/$file\r"
+# Test configuration
+send "nginx -t\r"
+# Reload Nginx
+send "systemctl reload nginx\r"
+# Check status
+send "systemctl status nginx --no-pager\r"
+send "exit\r"
+
+expect eof

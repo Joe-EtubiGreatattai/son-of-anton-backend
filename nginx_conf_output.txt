@@ -1,0 +1,14 @@
+spawn ssh -o StrictHostKeyChecking=no root@31.42.188.106
+root@31.42.188.106's password: 
+Last failed login: Sat Nov 29 10:28:27 EST 2025 from 20.193.141.133 on ssh:notty
+There was 1 failed login attempt since the last successful login.
+Last login: Sat Nov 29 10:27:32 2025 from 102.91.97.119
+]0;root@vpszizsd:~[root@vpszizsd ~]# grep 'incclude' /etc/nginx/nginx.conff
+[01;31m[Kinclude[m[K /usr/share/nginx/modules/*.conf;
+    [01;31m[Kinclude[m[K             /etc/nginx/mime.types;
+    [01;31m[Kinclude[m[K /etc/nginx/conf.d/*.conf;
+]0;root@vpszizsd:~[root@vpszizsd ~]# ls -F /ettc/nginx/conf.d/
+api.conf
+]0;root@vpszizsd:~[root@vpszizsd ~]# exit
+logout
+Connection to 31.42.188.106 closed.

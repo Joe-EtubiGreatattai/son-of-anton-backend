@@ -1,0 +1,15 @@
+spawn ssh -o StrictHostKeyChecking=no root@31.42.188.106
+root@31.42.188.106's password: 
+Last failed login: Sat Nov 29 10:14:52 EST 2025 from 135.235.138.43 on ssh:notty
+There were 23 failed login attempts since the last successful login.
+Last login: Sat Nov 29 06:45:12 2025 from 102.91.97.119
+]0;root@vpszizsd:~[root@vpszizsd ~]# echo 'CONNNECTED_SUCCESS'
+CONNECTED_SUCCESS
+]0;root@vpszizsd:~[root@vpszizsd ~]# netstat --tulnp | grep node
+tcp6       0      0 :::5000                 :::*                    LISTEN      13662/[01;31m[Knode[m[K /root/so 
+]0;root@vpszizsd:~[root@vpszizsd ~]# ps aux |  grep node
+root       13662  0.1  2.3 11836944 95056 ?      Ssl  07:04   0:20 [01;31m[Knode[m[K /root/son-of-anton-backend/server.js
+root       14126  0.0  0.0 222012  1092 pts/0    S+   10:17   0:00 grep --color=auto [01;31m[Knode[m[K
+]0;root@vpszizsd:~[root@vpszizsd ~]# exit
+logout
+Connection to 31.42.188.106 closed.

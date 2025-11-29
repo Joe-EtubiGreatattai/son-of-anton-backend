@@ -1,0 +1,26 @@
+#!/usr/bin/expect
+
+set timeout 20
+spawn ssh -o StrictHostKeyChecking=no root@31.42.188.106
+
+expect {
+    "password:" {
+        send "U:.Qw33teC8hS2\r"
+    }
+    timeout {
+        puts "SSH timed out"
+        exit 1
+    }
+}
+
+expect {
+    "root@" { }
+    "#" { }
+    "$" { }
+}
+
+send "cat /etc/os-release\r"
+send "which certbot\r"
+send "exit\r"
+
+expect eof

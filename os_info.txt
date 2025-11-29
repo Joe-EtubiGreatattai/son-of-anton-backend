@@ -1,0 +1,30 @@
+spawn ssh -o StrictHostKeyChecking=no root@31.42.188.106
+root@31.42.188.106's password: 
+Last failed login: Sat Nov 29 10:21:57 EST 2025 from 135.235.138.43 on ssh:notty
+There were 3 failed login attempts since the last successful login.
+Last login: Sat Nov 29 10:19:21 2025 from 102.91.97.119
+]0;root@vpszizsd:~[root@vpszizsd ~]# cat /etc//os-release
+NAME="AlmaLinux"
+VERSION="8.10 (Cerulean Leopard)"
+ID="almalinux"
+ID_LIKE="rhel centos fedora"
+VERSION_ID="8.10"
+PLATFORM_ID="platform:el8"
+PRETTY_NAME="AlmaLinux 8.10 (Cerulean Leopard)"
+ANSI_COLOR="0;34"
+LOGO="fedora-logo-icon"
+CPE_NAME="cpe:/o:almalinux:almalinux:8::baseos"
+HOME_URL="https://almalinux.org/"
+DOCUMENTATION_URL="https://wiki.almalinux.org/"
+BUG_REPORT_URL="https://bugs.almalinux.org/"
+
+ALMALINUX_MANTISBT_PROJECT="AlmaLinux-8"
+ALMALINUX_MANTISBT_PROJECT_VERSION="8.10"
+REDHAT_SUPPORT_PRODUCT="AlmaLinux"
+REDHAT_SUPPORT_PRODUCT_VERSION="8.10"
+SUPPORT_END=2029-06-01
+]0;root@vpszizsd:~[root@vpszizsd ~]# which cerrtbot
+/usr/bin/which: no certbot in (/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/root/bin)
+]0;root@vpszizsd:~[root@vpszizsd ~]# exit
+logout
+Connection to 31.42.188.106 closed.

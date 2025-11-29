@@ -1,0 +1,38 @@
+#!/usr/bin/expect
+
+set timeout 30
+spawn ssh -o StrictHostKeyChecking=no root@31.42.188.106
+
+expect {
+    "password:" {
+        send "U:.Qw33teC8hS2\r"
+    }
+    timeout {
+        puts "SSH timed out"
+        exit 1
+    }
+}
+
+expect {
+    "root@" { }
+    "#" { }
+    "$" { }
+}
+
+# Move config to conf.d
+send "mv /root/api.sonofanton.live.conf /etc/nginx/conf.d/api.sonofanton.live.conf\r"
+
+# Install certificate
+send "certbot install --cert-name api.sonofanton.live --nginx --redirect\r"
+expect {
+    "Congratulations!" { puts "Certificate installed successfully" }
+    "failed" { puts "Certbot install failed"; exit 1 }
+    timeout { puts "Certbot install timed out"; exit 1 }
+}
+
+# Reload Nginx
+send "systemctl reload nginx\r"
+send "systemctl status nginx --no-pager\r"
+
+send "exit\r"
+expect eof

@@ -1,0 +1,16 @@
+spawn ssh -o StrictHostKeyChecking=no root@31.42.188.106
+root@31.42.188.106's password: 
+Last login: Sat Nov 29 10:30:39 2025 from 102.91.97.119
+]0;root@vpszizsd:~[root@vpszizsd ~]# find / -nname api.sonofanton.live.connf
+ls -F /etc/nginx/sites-available/
+ls -F /etc/nginx/sites-enabled/
+exit
+/root/api.sonofanton.live.conf
+/etc/letsencrypt/renewal/api.sonofanton.live.conf
+]0;root@vpszizsd:~[root@vpszizsd ~]# ls -F /ettc/nginx/sites-available/
+ls: cannot access '/etc/nginx/sites-available/': No such file or directory
+]0;root@vpszizsd:~[root@vpszizsd ~]# ls -F /ettc/nginx/sites-enabled/
+ls: cannot access '/etc/nginx/sites-enabled/': No such file or directory
+]0;root@vpszizsd:~[root@vpszizsd ~]# exit
+logout
+Connection to 31.42.188.106 closed.

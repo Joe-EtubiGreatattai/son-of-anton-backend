@@ -1,0 +1,57 @@
+#!/usr/bin/expect
+
+set timeout 300
+spawn ssh -o StrictHostKeyChecking=no root@31.42.188.106
+
+expect {
+    "password:" {
+        send "U:.Qw33teC8hS2\r"
+    }
+    timeout {
+        puts "SSH timed out"
+        exit 1
+    }
+}
+
+expect {
+    "root@" { }
+    "#" { }
+    "$" { }
+}
+
+# Install EPEL
+send "dnf install -y epel-release\r"
+expect {
+    "Complete!" { }
+    "Nothing to do" { }
+    timeout { puts "EPEL install timed out"; exit 1 }
+}
+
+# Install Certbot
+send "dnf install -y certbot python3-certbot-nginx\r"
+expect {
+    "Complete!" { }
+    "Nothing to do" { }
+    timeout { puts "Certbot install timed out"; exit 1 }
+}
+
+# Run Certbot
+# Using --redirect to force HTTPS
+send "certbot --nginx -d api.sonofanton.live --non-interactive --agree-tos --email admin@sonofanton.live --redirect\r"
+expect {
+    "Congratulations!" { puts "Certificate obtained successfully" }
+    "Certificate not yet due for renewal" { puts "Certificate already exists" }
+    "failed" { puts "Certbot failed"; exit 1 }
+    timeout { puts "Certbot timed out"; exit 1 }
+}
+
+# Test renewal
+send "certbot renew --dry-run\r"
+expect {
+    "Congratulations" { }
+    "succeeded" { }
+    timeout { puts "Renewal test timed out"; exit 1 }
+}
+
+send "exit\r"
+expect eof

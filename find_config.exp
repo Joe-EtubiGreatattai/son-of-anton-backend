@@ -1,0 +1,27 @@
+#!/usr/bin/expect
+
+set timeout 30
+spawn ssh -o StrictHostKeyChecking=no root@31.42.188.106
+
+expect {
+    "password:" {
+        send "U:.Qw33teC8hS2\r"
+    }
+    timeout {
+        puts "SSH timed out"
+        exit 1
+    }
+}
+
+expect {
+    "root@" { }
+    "#" { }
+    "$" { }
+}
+
+send "find / -name api.sonofanton.live.conf\r"
+send "ls -F /etc/nginx/sites-available/\r"
+send "ls -F /etc/nginx/sites-enabled/\r"
+send "exit\r"
+
+expect eof

@@ -1,0 +1,48 @@
+spawn scp -o StrictHostKeyChecking=no api.sonofanton.live.conf root@31.42.188.106:/root/api.sonofanton.live.conf
+root@31.42.188.106's password: 
+   0%    0     0.0KB/s   - 100%  335     1.4KB/s   0
+spawn ssh -o StrictHostKeyChecking=no root@31.42.188.106
+root@31.42.188.106's password: 
+Last login: Sat Nov 29 10:17:39 2025 from 102.91.97.119
+]0;root@vpszizsd:~[root@vpszizsd ~]# mv /root//api.sonofanton.live.conf /eetc/nginx/sites-available/appi.sonofanton.live.conf
+mv: cannot move '/root/api.sonofanton.live.conf' to '/etc/nginx/sites-available/api.sonofanton.live.conf': No such file or directory
+systemctl status nginx --no-pager
+exit
+]0;root@vpszizsd:~[root@vpszizsd ~]# ln -sf /eetc/nginx/sites-available/appi.sonofanton.live.conf /etcc/nginx/sites-enabled/api.soonofanton.live.conf
+ln: failed to create symbolic link '/etc/nginx/sites-enabled/api.sonofanton.live.conf': No such file or directory
+]0;root@vpszizsd:~[root@vpszizsd ~]# nginx -t [A[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[Kt
+nginx: the configuration file /etc/nginx/nginx.conf syntax is ok
+nginx: configuration file /etc/nginx/nginx.conf test is successful
+]0;root@vpszizsd:~[root@vpszizsd ~]# systemctll reload nginx
+]0;root@vpszizsd:~[root@vpszizsd ~]# systemctll status nginx --no-pager
+[0;1;32m●[0m nginx.service - The nginx HTTP and reverse proxy server
+   Loaded: loaded (]8;;file://vpszizsd.netxi.host/usr/lib/systemd/system/nginx.service/usr/lib/systemd/system/nginx.service]8;;; enabled; vendor preset: disabled)
+   Active: [0;1;32mactive (running)[0m since Sat 2025-11-29 06:48:30 EST; 3h 30min ago
+  Process: 14202 ExecReload=/bin/kill -s HUP $MAINPID (code=exited, status=0/SUCCESS)
+  Process: 13444 ExecStart=/usr/sbin/nginx (code=exited, status=0/SUCCESS)
+  Process: 13442 ExecStartPre=/usr/sbin/nginx -t (code=exited, status=0/SUCCESS)
+  Process: 13440 ExecStartPre=/usr/bin/rm -f /run/nginx.pid (code=exited, status=0/SUCCESS)
+ Main PID: 13445 (nginx)
+    Tasks: 7 (limit: 24574)
+   Memory: 13.4M
+   CGroup: /system.slice/nginx.service
+           ├─13445 nginx: master proce…
+           ├─13446 nginx: worker proce…
+           ├─13447 nginx: worker proce…
+           ├─13448 nginx: worker proce…
+           ├─14203 nginx: worker proce…
+           ├─14204 nginx: worker proce…
+           └─14205 nginx: worker proce…
+
+Nov 29 06:48:30 vpszizsd.netxi.host systemd[1]: ...
+Nov 29 06:48:30 vpszizsd.netxi.host systemd[1]: ...
+Nov 29 06:48:30 vpszizsd.netxi.host systemd[1]: ...
+Nov 29 06:48:30 vpszizsd.netxi.host nginx[13442]: ...
+Nov 29 06:48:30 vpszizsd.netxi.host nginx[13442]: ...
+Nov 29 06:48:30 vpszizsd.netxi.host systemd[1]: ...
+Nov 29 10:19:22 vpszizsd.netxi.host systemd[1]: ...
+Nov 29 10:19:22 vpszizsd.netxi.host systemd[1]: ...
+Hint: Some lines were ellipsized, use -l to show in full.
+]0;root@vpszizsd:~[root@vpszizsd ~]# exit
+logout
+Connection to 31.42.188.106 closed.

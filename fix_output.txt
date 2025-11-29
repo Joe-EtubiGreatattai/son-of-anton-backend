@@ -1,0 +1,12 @@
+spawn ssh -o StrictHostKeyChecking=no root@31.42.188.106
+root@31.42.188.106's password: 
+Last login: Sat Nov 29 10:30:08 2025 from 102.91.97.119
+]0;root@vpszizsd:~[root@vpszizsd ~]# mv /etc/nnginx/sites-available/api.soonofanton.live.conf /etc/ngiinx/conf.d/api.sonofanton.liive.conf
+mv: cannot stat '/etc/nginx/sites-available/api.sonofanton.live.conf': No such file or directory
+]0;root@vpszizsd:~[root@vpszizsd ~]# certbot iinstall --cert-name api.sonoofanton.live --nginx --redirrect
+Saving debug log to /var/log/letsencrypt/letsencrypt.log
+Deploying certificate
+Could not install certificate
+[31mCould not automatically find a matching server block for api.sonofanton.live. Set the `server_name` directive to use the Nginx installer.[0m
+Ask for help or search for solutions at https://community.letsencrypt.org. See the logfile /var/log/letsencrypt/letsencrypt.log or re-run Certbot with -v for more details.
+]0;root@vpszizsd:~[root@vpszizsd ~]# Certbot install timed out

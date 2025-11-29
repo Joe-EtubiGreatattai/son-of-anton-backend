@@ -1,0 +1,297 @@
+spawn ssh -o StrictHostKeyChecking=no root@31.42.188.106
+root@31.42.188.106's password: 
+Last login: Sat Nov 29 10:26:52 2025 from 102.91.97.119
+]0;root@vpszizsd:~[root@vpszizsd ~]# dnf instaall -y epel-release
+Last metadata expiration check: 3:24:48 ago on Sat 29 Nov 2025 07:02:45 AM EST.
+Dependencies resolved.
+===========================
+ Package
+    Arch   Version
+              Repo    Size
+===========================
+Installing:
+ [1m[32mepel-release(B[m
+    noarch 8-21.el8
+              extras  24 k
+
+Transaction Summary
+===========================
+Install  1 Package
+
+Total download size: 24 k
+Installed size: 34 k
+Downloading Packages:
+       ---  B/s |   0  B     --:-- ETA       ---  B/s |   0  B     --:-- ETA       ---  B/s |   0  B     --:-- ETA       977 kB/s |  24 kB     00:00    
+---------------------------
+Total  70 kB/s |  24 kB     00:00     
+Running transaction check
+Transaction check succeeded.
+Running transaction test
+Transaction test succeeded.
+Running transaction
+  Preparing        :    1/1 
+  Installing       :   1/1  Installing       :    1/1 
+  Running scriptlet:    1/1 
+Many EPEL packages require the CodeReady Builder (CRB) repository.
+It is recommended that you run /usr/bin/crb enable to enable the CRB repository.
+
+  Verifying        :    1/1 
+
+Installed:
+  epel-release-8-21.el8.noarch
+
+Complete!
+]0;root@vpszizsd:~[root@vpszizsd ~]# dnf instaall -y certbot python3-certbbot-nginx
+       ---  B/s |   0  B     --:-- ETA        16 MB/s | 4.7 MB     00:00 ETA        16 MB/s |  12 MB     00:00 ETA        19 MB/s |  14 MB     00:00    
+Last metadata expiration check: 0:00:06 ago on Sat 29 Nov 2025 10:27:35 AM EST.
+Dependencies resolved.
+===========================
+ Package
+   Arch   Version
+              Repo    Size
+===========================
+Installing:
+ [1m[32mcertbot(B[m
+   noarch 1.22.0-1.el8
+              epel    54 k
+ [1m[32mpython3-certbot-nginx(B[m
+   noarch 1.22.0-1.el8
+              epel    85 k
+Installing dependencies:
+ [1m[32mpython3-acme(B[m
+   noarch 1.22.0-4.el8
+              epel    96 k
+ [1m[32mpython3-certbot(B[m
+   noarch 1.22.0-1.el8
+              epel   426 k
+ [1m[32mpython3-cffi(B[m
+   x86_64 1.11.5-6.el8
+              baseos 237 k
+ [1m[32mpython3-chardet(B[m
+   noarch 3.0.4-7.el8
+              baseos 195 k
+ [1m[32mpython3-configargparse(B[m
+   noarch 0.14.0-6.el8
+              epel    36 k
+ [1m[32mpython3-configobj(B[m
+   noarch 5.0.6-11.el8
+              baseos  68 k
+ [1m[32mpython3-cryptography(B[m
+   x86_64 3.2.1-8.el8_10
+              baseos 558 k
+ [1m[32mpython3-distro(B[m
+   noarch 1.4.0-2.module_el8.9.0+3700+efebe9fd
+              appstream
+                      36 k
+ [1m[32mpython3-idna(B[m
+   noarch 2.5-7.el8_10
+              baseos 102 k
+ [1m[32mpython3-josepy(B[m
+   noarch 1.9.0-1.el8
+              epel   103 k
+ [1m[32mpython3-parsedatetime(B[m
+   noarch 2.5-1.el8
+              epel    79 k
+ [1m[32mpython3-ply(B[m
+   noarch 3.9-9.el8
+              baseos 110 k
+ [1m[32mpython3-pyOpenSSL(B[m
+   noarch 19.0.0-1.el8
+              appstream
+                     102 k
+ [1m[32mpython3-pycparser(B[m
+   noarch 2.14-14.el8
+              baseos 109 k
+ [1m[32mpython3-pyparsing(B[m
+   noarch 2.1.10-7.el8
+              baseos 142 k
+ [1m[32mpython3-pyrfc3339(B[m
+   noarch 1.1-1.el8
+              epel    19 k
+ [1m[32mpython3-pysocks(B[m
+   noarch 1.6.8-3.el8
+              baseos  34 k
+ [1m[32mpython3-pytz(B[m
+   noarch 2017.2-11.el8
+              appstream
+                      53 k
+ [1m[32mpython3-requests(B[m
+   noarch 2.20.0-6.el8_10
+              baseos 125 k
+ [1m[32mpython3-requests-toolbelt(B[m
+   noarch 0.9.1-4.el8
+              epel    91 k
+ [1m[32mpython3-urllib3(B[m
+   noarch 1.24.2-8.el8_10
+              baseos 176 k
+ [1m[32mpython3-zope-component(B[m
+   noarch 4.3.0-8.el8
+              epel   313 k
+ [1m[32mpython3-zope-event(B[m
+   noarch 4.2.0-12.el8
+              epel   210 k
+ [1m[32mpython3-zope-interface(B[m
+   x86_64 4.6.0-1.el8
+              epel   158 k
+Installing weak dependencies:
+ [1m[32mpython-josepy-doc(B[m
+   noarch 1.9.0-1.el8
+              epel    23 k
+
+Transaction Summary
+===========================
+Install  27 Packages
+
+Total download size: 3.7 M
+Installed size: 15 M
+Downloading Packages:
+        16 MB/s |   0  B     00:00 ETA        16 MB/s |   0  B     00:00 ETA        16 MB/s |   0  B     00:00 ETA        15 MB/s | 666  B     00:00 ETA       ---  B/s |   0  B     --:-- ETA       1.9 MB/s |  68 kB     00:00    
+       6.2 MB/s | 223 kB     00:00 ETA       5.2 MB/s | 237 kB     00:00    
+       6.3 MB/s | 470 kB     00:00 ETA       4.1 MB/s | 195 kB     00:00    
+       6.3 MB/s | 500 kB     00:00 ETA       6.7 MB/s | 102 kB     00:00    
+       6.3 MB/s | 809 kB     00:00 ETA       5.9 MB/s | 110 kB     00:00    
+       6.3 MB/s | 918 kB     00:00 ETA       9.6 MB/s | 109 kB     00:00    
+       6.4 MB/s | 1.1 MB     00:00 ETA       4.1 MB/s |  34 kB     00:00    
+       6.4 MB/s | 1.2 MB     00:00 ETA       7.2 MB/s | 142 kB     00:00    
+       6.4 MB/s | 1.4 MB     00:00 ETA       6.1 MB/s | 125 kB     00:00    
+       6.5 MB/s | 1.7 MB     00:00 ETA       8.6 MB/s | 558 kB     00:00    
+       6.5 MB/s | 1.7 MB     00:00 ETA       8.3 MB/s | 176 kB     00:00    
+       6.5 MB/s | 1.8 MB     00:00 ETA       4.6 MB/s |  36 kB     00:00    
+       6.5 MB/s | 1.8 MB     00:00 ETA       6.7 MB/s |  53 kB     00:00    
+       6.5 MB/s | 1.9 MB     00:00 ETA       6.4 MB/s | 102 kB     00:00    
+       6.5 MB/s | 2.0 MB     00:00 ETA       529 kB/s |  23 kB     00:00    
+       6.5 MB/s | 2.1 MB     00:00 ETA       1.0 MB/s |  54 kB     00:00    
+       6.5 MB/s | 2.1 MB     00:00 ETA       1.8 MB/s |  96 kB     00:00    
+       6.5 MB/s | 2.3 MB     00:00 ETA       3.6 MB/s |  36 kB     00:00    
+       6.5 MB/s | 2.5 MB     00:00 ETA        14 MB/s | 426 kB     00:00    
+       6.5 MB/s | 2.6 MB     00:00 ETA       9.0 MB/s | 103 kB     00:00    
+       6.5 MB/s | 2.7 MB     00:00 ETA       8.4 MB/s |  79 kB     00:00    
+       6.5 MB/s | 2.8 MB     00:00 ETA       3.2 MB/s |  19 kB     00:00    
+       6.5 MB/s | 2.8 MB     00:00 ETA       1.8 MB/s |  85 kB     00:00    
+       6.6 MB/s | 2.9 MB     00:00 ETA       7.3 MB/s |  91 kB     00:00    
+       6.6 MB/s | 3.0 MB     00:00 ETA       6.1 MB/s | 158 kB     00:00    
+       6.7 MB/s | 3.6 MB     00:00 ETA       6.7 MB/s | 210 kB     00:00    
+       6.7 MB/s | 3.6 MB     00:00 ETA       7.8 MB/s | 313 kB     00:00    
+---------------------------
+Total 2.9 MB/s | 3.7 MB     00:01     
+       ---  B/s |   0  B     --:-- ETA       1.6 MB/s | 1.6 kB     00:00    
+Importing GPG key 0x2F86D6A1:
+ Userid     : "Fedora EPEL (8) <epel@fedoraproject.org>"
+ Fingerprint: 94E2 79EB 8D8F 25B2 1810 ADF1 21EA 45AB 2F86 D6A1
+ From       : /etc/pki/rpm-gpg/RPM-GPG-KEY-EPEL-8
+Key imported successfully
+Running transaction check
+Transaction check succeeded.
+Running transaction test
+Transaction test succeeded.
+Running transaction
+  Preparing        :   1/1  Preparing        :    1/1 
+  Installing       :    1/27  Installing       :     1/27 
+  Installing       :    2/27  Installing       :     2/27 
+  Installing       :    3/27  Installing       :     3/27 
+  Installing       :    4/27  Installing       :     4/27 
+  Installing       :    5/27  Installing       :     5/27 
+  Installing       :    6/27  Installing       :     6/27 
+  Installing       :    7/27  Installing       :     7/27 
+  Installing       :    8/27  Installing       :     8/27 
+  Installing       :    9/27  Installing       :     9/27 
+  Installing       :   10/27  Installing       :    10/27 
+  Installing       :   11/27  Installing       :    11/27 
+  Installing       :   12/27  Installing       :    12/27 
+  Installing       :   13/27  Installing       :    13/27 
+  Installing       :   14/27  Installing       :    14/27 
+  Installing       :   15/27  Installing       :    15/27 
+  Installing       :   16/27  Installing       :    16/27 
+  Installing       :   17/27  Installing       :    17/27 
+  Installing       :   18/27  Installing       :    18/27 
+  Installing       :   19/27  Installing       :    19/27 
+  Installing       :   20/27  Installing       :    20/27 
+  Installing       :   21/27  Installing       :    21/27 
+  Installing       :   22/27  Installing       :    22/27 
+  Installing       :   23/27  Installing       :    23/27 
+  Installing       :   24/27  Installing       :    24/27 
+  Installing       :   25/27  Installing       :    25/27 
+  Installing       :   26/27  Installing       :    26/27 
+  Running scriptlet:    26/27 
+  Installing       :   27/27  Installing       :    27/27 
+  Running scriptlet:    27/27 
+  Verifying        :     1/27 
+  Verifying        :     2/27 
+  Verifying        :     3/27 
+  Verifying        :     4/27 
+  Verifying        :     5/27 
+  Verifying        :     6/27 
+  Verifying        :     7/27 
+  Verifying        :     8/27 
+  Verifying        :     9/27 
+  Verifying        :    10/27 
+  Verifying        :    11/27 
+  Verifying        :    12/27 
+  Verifying        :    13/27 
+  Verifying        :    14/27 
+  Verifying        :    15/27 
+  Verifying        :    16/27 
+  Verifying        :    17/27 
+  Verifying        :    18/27 
+  Verifying        :    19/27 
+  Verifying        :    20/27 
+  Verifying        :    21/27 
+  Verifying        :    22/27 
+  Verifying        :    23/27 
+  Verifying        :    24/27 
+  Verifying        :    25/27 
+  Verifying        :    26/27 
+  Verifying        :    27/27 
+
+Installed:
+  certbot-1.22.0-1.el8.noarch
+  python-josepy-doc-1.9.0-1.el8.noarch
+  python3-acme-1.22.0-4.el8.noarch
+  python3-certbot-1.22.0-1.el8.noarch
+  python3-certbot-nginx-1.22.0-1.el8.noarch
+  python3-cffi-1.11.5-6.el8.x86_64
+  python3-chardet-3.0.4-7.el8.noarch
+  python3-configargparse-0.14.0-6.el8.noarch
+  python3-configobj-5.0.6-11.el8.noarch
+  python3-cryptography-3.2.1-8.el8_10.x86_64
+  python3-distro-1.4.0-2.module_el8.9.0+3700+efebe9fd.noarch
+  python3-idna-2.5-7.el8_10.noarch
+  python3-josepy-1.9.0-1.el8.noarch
+  python3-parsedatetime-2.5-1.el8.noarch
+  python3-ply-3.9-9.el8.noarch
+  python3-pyOpenSSL-19.0.0-1.el8.noarch
+  python3-pycparser-2.14-14.el8.noarch
+  python3-pyparsing-2.1.10-7.el8.noarch
+  python3-pyrfc3339-1.1-1.el8.noarch
+  python3-pysocks-1.6.8-3.el8.noarch
+  python3-pytz-2017.2-11.el8.noarch
+  python3-requests-2.20.0-6.el8_10.noarch
+  python3-requests-toolbelt-0.9.1-4.el8.noarch
+  python3-urllib3-1.24.2-8.el8_10.noarch
+  python3-zope-component-4.3.0-8.el8.noarch
+  python3-zope-event-4.2.0-12.el8.noarch
+  python3-zope-interface-4.6.0-1.el8.x86_64
+
+Complete!
+]0;root@vpszizsd:~[root@vpszizsd ~]# certbot ---nginx -d api.sonofanton.liive --non-interactive --agreee-tos --email admin@sonofannton.live --redirect
+Saving debug log to /var/log/letsencrypt/letsencrypt.log
+Account registered.
+Requesting a certificate for api.sonofanton.live
+
+Successfully received certificate.
+Certificate is saved at: /etc/letsencrypt/live/api.sonofanton.live/fullchain.pem
+Key is saved at:         /etc/letsencrypt/live/api.sonofanton.live/privkey.pem
+This certificate expires on 2026-02-27.
+These files will be updated when the certificate renews.
+Certbot has set up a scheduled task to automatically renew this certificate in the background.
+
+Deploying certificate
+Could not install certificate
+[1m
+NEXT STEPS:
+[0m- The certificate was saved, but could not be installed (installer: nginx). After fixing the error shown below, try installing it again by running:
+  certbot install --cert-name api.sonofanton.live
+
+[31mCould not automatically find a matching server block for api.sonofanton.live. Set the `server_name` directive to use the Nginx installer.[0m
+Ask for help or search for solutions at https://community.letsencrypt.org. See the logfile /var/log/letsencrypt/letsencrypt.log or re-run Certbot with -v for more details.
+]0;root@vpszizsd:~[root@vpszizsd ~]# Certbot timed out

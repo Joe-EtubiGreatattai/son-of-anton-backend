@@ -1,0 +1,39 @@
+#!/usr/bin/expect
+
+set timeout 30
+spawn ssh -o StrictHostKeyChecking=no root@31.42.188.106
+
+# Wait for password prompt specifically
+expect {
+    "password:" {
+        send "U:.Qw33teC8hS2\r"
+    }
+    timeout {
+        puts "Timed out waiting for password prompt"
+        exit 1
+    }
+    eof {
+        puts "Connection closed before password prompt"
+        exit 1
+    }
+}
+
+# Wait for shell prompt
+expect {
+    "root@" { }
+    "#" { }
+    "$" { }
+    timeout {
+        puts "Timed out waiting for shell prompt"
+        exit 1
+    }
+}
+
+# Send commands
+send "echo 'CONNECTED_SUCCESS'\r"
+send "netstat -tulnp | grep node\r"
+send "ps aux | grep node\r"
+send "exit\r"
+
+# Wait for exit
+expect eof

@@ -1,0 +1,23 @@
+spawn ssh -v -o StrictHostKeyChecking=no root@31.42.188.106
+parent: waiting for sync byte
+parent: telling child to go ahead
+parent: now unsynchronized from child
+spawn: returns {17886}
+
+expect: does "" (spawn_id exp7) match glob pattern "password:"? no
+"Permission denied"? no
+"root@"? no
+"#"? no
+"$"? yes
+expect: set expect_out(0,string) ""
+expect: set expect_out(spawn_id) "exp7"
+expect: set expect_out(buffer) ""
+send: sending "echo 'CONNECTED'\r" to { exp7 }
+send: sending "netstat -tulnp | grep node\r" to { exp7 }
+send: sending "ps aux | grep node\r" to { exp7 }
+
+expect: does "" (spawn_id exp7) match glob pattern "$"? yes
+expect: set expect_out(0,string) ""
+expect: set expect_out(spawn_id) "exp7"
+expect: set expect_out(buffer) ""
+send: sending "exit\r" to { exp7 }

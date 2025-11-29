@@ -1,0 +1,9 @@
+spawn ssh -o StrictHostKeyChecking=no root@31.42.188.106
+root@31.42.188.106's password: 
+Last login: Sat Nov 29 10:31:35 2025 from 102.91.97.119
+]0;root@vpszizsd:~[root@vpszizsd ~]# mv /root//api.sonofanton.live.conf /eetc/nginx/conf.d/api.sonofannton.live.conf
+]0;root@vpszizsd:~[root@vpszizsd ~]# certbot iinstall --cert-name api.sonoofanton.live --nginx --redirrect
+Saving debug log to /var/log/letsencrypt/letsencrypt.log
+Deploying certificate
+Successfully deployed certificate for api.sonofanton.live to /etc/nginx/conf.d/api.sonofanton.live.conf
+]0;root@vpszizsd:~[root@vpszizsd ~]# Certbot install timed out

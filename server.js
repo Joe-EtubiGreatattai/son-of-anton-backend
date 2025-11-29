@@ -10,12 +10,7 @@ const jwt = require('jsonwebtoken');
 const app = express();
 
 const corsOptions = {
-    origin: [
-        'https://son-of-anton-chat.vercel.app',
-        'http://localhost:3000',
-        'http://localhost:8080',
-        'http://localhost:5173',
-    ],
+    origin: true, // Accept all origins
     credentials: true,
     optionsSuccessStatus: 200
 };

@@ -328,16 +328,16 @@ async function searchAmazonProducts(searchQuery) {
                         const asin = item.ASIN;
                         const title =
                             item.ItemInfo &&
-                            item.ItemInfo.Title &&
-                            item.ItemInfo.Title.DisplayValue
+                                item.ItemInfo.Title &&
+                                item.ItemInfo.Title.DisplayValue
                                 ? item.ItemInfo.Title.DisplayValue
                                 : 'Unknown Amazon Product';
 
                         const image =
                             item.Images &&
-                            item.Images.Primary &&
-                            item.Images.Primary.Medium &&
-                            item.Images.Primary.Medium.URL
+                                item.Images.Primary &&
+                                item.Images.Primary.Medium &&
+                                item.Images.Primary.Medium.URL
                                 ? item.Images.Primary.Medium.URL
                                 : null;
 
@@ -354,14 +354,14 @@ async function searchAmazonProducts(searchQuery) {
 
                         const rating =
                             item.CustomerReviews &&
-                            item.CustomerReviews.StarRating &&
-                            item.CustomerReviews.StarRating.DisplayValue
+                                item.CustomerReviews.StarRating &&
+                                item.CustomerReviews.StarRating.DisplayValue
                                 ? item.CustomerReviews.StarRating.DisplayValue
                                 : 'N/A';
 
                         const reviewsCount =
                             item.CustomerReviews &&
-                            typeof item.CustomerReviews.Count === 'number'
+                                typeof item.CustomerReviews.Count === 'number'
                                 ? item.CustomerReviews.Count
                                 : 'N/A';
 
@@ -438,6 +438,17 @@ function generateToken(user) {
         { expiresIn: '7d' }
     );
 }
+
+// Base Route
+app.get('/', (req, res) => {
+    res.send(`
+        <div style="font-family: sans-serif; text-align: center; padding: 50px;">
+            <h1>Welcome to the Shopping Bot API 🛒</h1>
+            <p>Your AI-powered shopping assistant backend is running smoothly.</p>
+            <p>Time: ${new Date().toLocaleString()}</p>
+        </div>
+    `);
+});
 
 // Register Route
 app.post('/api/register', async (req, res) => {

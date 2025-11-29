@@ -1272,10 +1272,21 @@ async function findBestDeals(results, searchQuery = '', userId = null, sessionId
         return { deals: null, totalValid: null };
     }
 
-    const amazonResults = validResults.filter((d) =>
+    // Filter out items without valid links (excluding '#', empty, null, or undefined)
+    const resultsWithValidLinks = validResults.filter((d) =>
+        d.link && d.link !== '#' && d.link.trim() !== ''
+    );
+
+    console.log(`📊 Filtered ${validResults.length} items → ${resultsWithValidLinks.length} items with valid links`);
+
+    if (resultsWithValidLinks.length === 0) {
+        return { deals: null, totalValid: null };
+    }
+
+    const amazonResults = resultsWithValidLinks.filter((d) =>
         d.source && d.source.toLowerCase().includes('amazon')
     );
-    const otherResults = validResults.filter(
+    const otherResults = resultsWithValidLinks.filter(
         (d) => !d.source || !d.source.toLowerCase().includes('amazon')
     );
 
@@ -1287,7 +1298,7 @@ async function findBestDeals(results, searchQuery = '', userId = null, sessionId
 
     return {
         deals: orderedResults.slice(0, 10),
-        totalValid: validResults.length
+        totalValid: resultsWithValidLinks.length
     };
 }
 

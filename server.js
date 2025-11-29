@@ -1401,6 +1401,15 @@ app.post('/api/chat', async (req, res) => {
 
         const displayMessage = formatDisplayMessage(aiResponse);
 
+        // Debug: Log deals to verify link field is included
+        if (deals && deals.length > 0) {
+            console.log('📦 Sending deals to frontend:', JSON.stringify(deals.map(d => ({
+                title: d.title.substring(0, 30) + '...',
+                hasLink: !!d.link,
+                link: d.link ? d.link.substring(0, 50) + '...' : 'NO LINK'
+            })), null, 2));
+        }
+
         res.json({
             aiResponse: displayMessage,
             sessionId: session,
@@ -1465,6 +1474,15 @@ app.post('/api/search', async (req, res) => {
         }
 
         const displayMessage = formatDisplayMessage(aiResponse);
+
+        // Debug: Log deals to verify link field is included
+        if (deals && deals.length > 0) {
+            console.log('📦 Sending deals to frontend (search endpoint):', JSON.stringify(deals.map(d => ({
+                title: d.title.substring(0, 30) + '...',
+                hasLink: !!d.link,
+                link: d.link ? d.link.substring(0, 50) + '...' : 'NO LINK'
+            })), null, 2));
+        }
 
         res.json({
             aiResponse: displayMessage,

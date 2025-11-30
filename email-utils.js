@@ -68,14 +68,14 @@ function buildEmailHtml({ user, searchParty, deals }) {
 
   const dealCards = (deals && deals.length)
     ? deals.map(d => {
-        const title = escapeHtml(d.title || 'Unknown product');
-        const price = (typeof d.price === 'number') ? `$${d.price.toFixed(2)}` : escapeHtml(d.price || 'N/A');
-        const source = escapeHtml(d.source || 'Seller');
-        const link = escapeAttr(d.link || '#');
-        const image = escapeAttr(d.image || '');
-        const rating = d.rating && d.reviews ? `<div style="font-size:13px;color:#888;margin-top:6px;display:flex;align-items:center;gap:4px;"><span style="color:#f59e0b;">★</span> ${escapeHtml(d.rating)} • ${escapeHtml(d.reviews)} reviews</div>` : '';
+      const title = escapeHtml(d.title || 'Unknown product');
+      const price = (typeof d.price === 'number') ? `$${d.price.toFixed(2)}` : escapeHtml(d.price || 'N/A');
+      const source = escapeHtml(d.source || 'Seller');
+      const link = escapeAttr(d.link || '#');
+      const image = escapeAttr(d.image || '');
+      const rating = d.rating && d.reviews ? `<div style="font-size:13px;color:#888;margin-top:6px;display:flex;align-items:center;gap:4px;"><span style="color:#f59e0b;">★</span> ${escapeHtml(d.rating)} • ${escapeHtml(d.reviews)} reviews</div>` : '';
 
-        return `
+      return `
           <div style="background:#fff;border-radius:12px;overflow:hidden;margin-bottom:16px;border:1px solid #e5e7eb;box-shadow:0 1px 3px rgba(0,0,0,0.05);">
             <table role="presentation" width="100%" style="border-collapse:collapse;">
               <tr>
@@ -94,14 +94,14 @@ function buildEmailHtml({ user, searchParty, deals }) {
                   </div>
                   ${rating}
                   <div style="margin-top:14px;">
-                    <a href="${link}" target="_blank" rel="noopener noreferrer" style="display:inline-block;padding:10px 20px;background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);color:#fff;text-decoration:none;border-radius:8px;font-weight:600;font-size:14px;box-shadow:0 2px 4px rgba(102,126,234,0.3);">View Deal →</a>
+                    <a href="${link}" target="_blank" rel="noopener noreferrer" style="display:inline-block;padding:10px 20px;background:#ff6600;color:#fff;text-decoration:none;border-radius:8px;font-weight:600;font-size:14px;box-shadow:0 2px 4px rgba(255,102,0,0.3);">View Deal →</a>
                   </div>
                 </td>
               </tr>
             </table>
           </div>
         `;
-      }).join('')
+    }).join('')
     : `<div style="padding:24px;text-align:center;color:#9ca3af;background:#f9fafb;border-radius:8px;border:1px dashed #e5e7eb;">No deals found matching your criteria.</div>`;
 
   // Final HTML
@@ -116,7 +116,7 @@ function buildEmailHtml({ user, searchParty, deals }) {
     <center style="width:100%;table-layout:fixed;">
       <div style="max-width:680px;margin:32px auto;">
         <!-- Header -->
-        <div style="background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);padding:32px 24px;border-radius:16px 16px 0 0;text-align:center;box-shadow:0 4px 6px rgba(0,0,0,0.1);">
+        <div style="background:#ff6600;padding:32px 24px;border-radius:16px 16px 0 0;text-align:center;box-shadow:0 4px 6px rgba(0,0,0,0.1);">
           <div style="font-size:28px;font-weight:700;color:#fff;margin-bottom:8px;">🎯 Deals Found!</div>
           <div style="font-size:18px;color:rgba(255,255,255,0.95);font-weight:500;">${itemName}</div>
           <div style="margin-top:12px;font-size:13px;color:rgba(255,255,255,0.8);">Sent by ${escapeHtml(FROM_NAME)}</div>
@@ -151,7 +151,7 @@ function buildEmailHtml({ user, searchParty, deals }) {
 
           <!-- CTA Button -->
           <div style="text-align:center;margin-bottom:24px;">
-            <a href="#" style="display:inline-block;padding:14px 32px;background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);color:#fff;text-decoration:none;border-radius:10px;font-weight:700;font-size:16px;box-shadow:0 4px 6px rgba(102,126,234,0.4);">Open Dashboard</a>
+            <a href="#" style="display:inline-block;padding:14px 32px;background:#ff6600;color:#fff;text-decoration:none;border-radius:10px;font-weight:700;font-size:16px;box-shadow:0 4px 6px rgba(255,102,0,0.4);">Open Dashboard</a>
           </div>
 
           <!-- Footer Note -->

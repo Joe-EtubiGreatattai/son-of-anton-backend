@@ -152,6 +152,7 @@ const userSchema = new mongoose.Schema({
             enum: ['Best Deal', 'Fast Shipping', 'Trusted Brands', 'Balanced', 'Quality First'],
             default: 'Balanced',
         },
+        country: { type: String, default: 'US' },
     },
     searchPreferences: {
         quickSearchMode: { type: Boolean, default: true },
@@ -385,14 +386,23 @@ async function searchAmazonProducts(searchQuery) {
 }
 
 // Unified search: Amazon (direct API) + SerpAPI (Google Shopping, non-Amazon only)
-async function searchAllSources(searchQuery) {
+async function searchAllSources(searchQuery, user = null) {
+    const country = user?.preferences?.country || 'US';
+
     const [amazonProducts, serpResults] = await Promise.all([
         searchAmazonProducts(searchQuery),
-        searchItem(searchQuery).catch((err) => {
+        searchItem(searchQuery, country).catch((err) => {
             console.error('SerpAPI search error:', err.message || err);
             return null;
         })
     ]);
+
+    console.log(`📊 Search results debug: Amazon=${amazonProducts.length} items, SerpAPI=${serpResults ? 'success' : 'failed'}`);
+    if (serpResults && serpResults.shopping_results) {
+        console.log(`📊 SerpAPI found ${serpResults.shopping_results.length} shopping results`);
+    } else if (serpResults) {
+        console.log('📊 SerpAPI returned data but no shopping_results:', Object.keys(serpResults));
+    }
 
     const shoppingResults = [];
 
@@ -889,6 +899,77 @@ function generateSessionId(req) {
 // Store conversation history (per session or user)
 const conversationHistory = new Map();
 
+// Search Result Schema for persistent caching
+const searchResultSchema = new mongoose.Schema({
+    query: { type: String, required: true, unique: true, index: true },
+    deals: [
+        {
+            title: String,
+            price: Number,
+            source: String,
+            link: String,
+            image: String,
+            rating: String,
+            reviews: String
+        }
+    ],
+    totalValid: Number,
+    aiDealSummary: String,
+    lastUpdated: { type: Date, default: Date.now }
+});
+
+const SearchResult = mongoose.model('SearchResult', searchResultSchema);
+
+// Database cache configuration
+const DB_CACHE_TTL = 24 * 60 * 60 * 1000; // 24 hours
+
+async function getCachedSearch(query) {
+    try {
+        const normalizedQuery = query.toLowerCase().trim();
+        const cached = await SearchResult.findOne({ query: normalizedQuery });
+
+        if (cached && Date.now() - cached.lastUpdated.getTime() < DB_CACHE_TTL) {
+            console.log(`✅ DB Cache hit for query: "${query}"`);
+            return {
+                deals: cached.deals,
+                totalValid: cached.totalValid,
+                aiDealSummary: cached.aiDealSummary
+            };
+        }
+
+        if (cached) {
+            console.log(`⏰ DB Cache expired for query: "${query}"`);
+            // We don't delete immediately, we'll just overwrite it when we get new results
+        }
+        return null;
+    } catch (error) {
+        console.error('Cache read error:', error);
+        return null;
+    }
+}
+
+async function setCachedSearch(query, data) {
+    try {
+        const normalizedQuery = query.toLowerCase().trim();
+
+        await SearchResult.findOneAndUpdate(
+            { query: normalizedQuery },
+            {
+                deals: data.deals,
+                totalValid: data.totalValid,
+                aiDealSummary: data.aiDealSummary,
+                lastUpdated: new Date()
+            },
+            { upsert: true, new: true }
+        );
+        console.log(`💾 Saved search results to DB for: "${query}"`);
+    } catch (error) {
+        console.error('Cache write error:', error);
+    }
+}
+
+
+
 // Build user preferences prompt for AI
 function buildUserPreferencesPrompt(user) {
     if (!user || !user.preferences) return '';
@@ -954,15 +1035,38 @@ function generateAIPrompt(userMessage, searchQuery, user, messageHistory) {
     const basePrompt = `
 You are a shopping assistant AI that helps users find the best deals and products.
 
-When appropriate, respond with two parts:
-1) A conversational explanation.
-2) If you want the system to perform a product search, append a line starting with: SEARCH: <query here>
+DECISION LOGIC:
+1. Is the user asking for a product, deal, or shopping advice? -> TRIGGER SEARCH.
+2. Is the user just saying hello, asking how you are, or chatting casually? -> DO NOT SEARCH.
 
-Examples of using SEARCH:
-- SEARCH: "gaming laptop under $1000"
-- SEARCH: "wireless earbuds noise cancellation"
+RESPONSE FORMAT (If Shopping):
+1) Brief conversational response (1-2 sentences max).
+2) IMMEDIATELY add a new line starting with: SEARCH: <product query>
 
-Only use SEARCH when you want the system to fetch live deals.
+RESPONSE FORMAT (If Casual Chat):
+1) Just respond conversationally.
+2) Do NOT include "SEARCH:".
+
+SEARCH FORMAT:
+- SEARCH: simple product keywords
+- Be concise with the search query (2-5 words)
+
+EXAMPLES:
+User: "help me find a rolex"
+Response: I'll find the best Rolex watches for you!
+SEARCH: rolex watches
+
+User: "how are you"
+Response: I'm doing great, ready to help you shop! What are you looking for today?
+
+User: "I need wireless earbuds"
+Response: Let me search for wireless earbuds options!
+SEARCH: wireless earbuds
+
+IMPORTANT RULES:
+- If user mentions ANY product name, category, or shopping intent → ADD SEARCH:
+- If user is just chatting → NO SEARCH.
+- Keep your response SHORT (under 20 words) when triggering a search
 `;
 
     const userPrefPrompt = buildUserPreferencesPrompt(user);
@@ -985,7 +1089,7 @@ ${historyText}
 Current user message:
 User: ${userMessage}
 
-If you think a product search is needed based on this conversation, be sure to include "SEARCH: <query>".
+Remember: Only use "SEARCH: <query>" if the user is actually looking for a product.
 `;
 
     return finalPrompt;
@@ -1036,16 +1140,23 @@ function formatDisplayMessage(message) {
 }
 
 // Search function (SerpAPI / Google Shopping)
-async function searchItem(itemName) {
+async function searchItem(itemName, country = 'US') {
     try {
-        const response = await axios.get(SERP_BASE_URL, {
-            params: {
-                q: itemName,
-                api_key: SERP_API_KEY,
-                engine: 'google_shopping',
-                num: 10
-            }
-        });
+        const params = {
+            q: itemName,
+            api_key: SERP_API_KEY,
+            engine: 'google_shopping',
+            num: 10
+        };
+
+        if (country === 'NG') {
+            params.gl = 'ng';
+            params.google_domain = 'google.com.ng';
+            params.location = 'Nigeria';
+            params.currency = 'NGN';
+        }
+
+        const response = await axios.get(SERP_BASE_URL, { params });
         return response.data;
     } catch (error) {
         console.error('Search error:', error.message);
@@ -1210,7 +1321,7 @@ async function findBestDeals(results, searchQuery = '', userId = null, sessionId
 
         const priceStr =
             typeof item.price === 'string'
-                ? item.price.replace(/[$,]/g, '')
+                ? item.price.replace(/[$,₦]/g, '')
                 : String(item.price);
         const price = parseFloat(priceStr);
 
@@ -1311,23 +1422,21 @@ async function getAIRecommendation(deals, searchQuery, user) {
     const userContext = user ? `\n\nYou're making this recommendation for ${user.username || user.email}. Consider their preferences:\n${buildUserPreferencesPrompt(user)}\n${buildSearchPreferencesPrompt(user)}` : '';
 
     const prompt = `
-You are a shopping assistant AI helping a user find the best deals.
+You are a shopping assistant AI. The user searched for: "${searchQuery}"
 
-The user searched for: "${searchQuery}"
-
-Here are the top deals we found:
+Here are the top deals found:
 ${dealsText}
 
 ${userContext}
 
-Please:
-1. Briefly compare these options.
-2. Explain which 1-2 deals are the best value and why.
-3. Call out any trade-offs (price vs quality vs shipping vs brand).
-4. Make a clear recommendation in plain language.
-
-Avoid repeating all details; focus on useful comparisons and practical advice.
+TASK: Recommend the best option in 2-3 SHORT sentences.
+- Be extremely concise and direct.
+- Pick the single best value option and say why.
+- Mention one alternative if necessary.
+- NO fluff, NO long introductions, NO bullet points unless absolutely needed.
+- Keep the entire response under 50 words if possible.
 `;
+
 
     try {
         const aiResponse = await callGeminiAPI(prompt);
@@ -1382,51 +1491,16 @@ app.post('/api/chat', async (req, res) => {
         sessionHistory.push({ role: 'assistant', content: aiResponse });
         conversationHistory.set(session, sessionHistory);
 
-        let deals = null;
-        let totalValid = 0;
-        let aiDealSummary = null;
-
-        if (shouldSearch && extractedSearchQuery) {
-            const searchResults = await searchAllSources(extractedSearchQuery);
-            const result = await findBestDeals(searchResults, extractedSearchQuery, user?._id, session);
-            deals = result.deals;
-            totalValid = result.totalValid;
-
-            if (deals && deals.length > 0) {
-                aiDealSummary = await getAIRecommendation(deals, extractedSearchQuery, user);
-            }
-        } else if (searchQuery) {
-            const userPrefersAutoSearch = user?.searchPreferences?.autoSearchOnOpen ?? true;
-
-            if (userPrefersAutoSearch) {
-                const searchResults = await searchAllSources(searchQuery);
-                const { deals: foundDeals, totalValid: foundTotalValid } = await findBestDeals(searchResults, searchQuery, user?._id, session);
-
-                if (foundDeals && foundDeals.length > 0) {
-                    deals = foundDeals;
-                    totalValid = foundTotalValid;
-                    aiDealSummary = await getAIRecommendation(deals, searchQuery, user);
-                }
-            }
-        }
-
         const displayMessage = formatDisplayMessage(aiResponse);
-
-        // Debug: Log deals to verify link field is included
-        if (deals && deals.length > 0) {
-            console.log('📦 Sending deals to frontend:', JSON.stringify(deals.map(d => ({
-                title: d.title.substring(0, 30) + '...',
-                hasLink: !!d.link,
-                link: d.link ? d.link.substring(0, 50) + '...' : 'NO LINK'
-            })), null, 2));
-        }
 
         res.json({
             aiResponse: displayMessage,
             sessionId: session,
-            deals,
-            totalValid,
-            aiDealSummary
+            shouldSearch,
+            searchQuery: extractedSearchQuery || searchQuery,
+            deals: null, // Frontend will fetch these if shouldSearch is true
+            totalValid: 0,
+            aiDealSummary: null
         });
     } catch (error) {
         console.error('Chat error:', error);
@@ -1474,13 +1548,28 @@ app.post('/api/search', async (req, res) => {
         let aiDealSummary = null;
 
         if (shouldSearch && extractedSearchQuery) {
-            const searchResults = await searchAllSources(extractedSearchQuery);
-            const result = await findBestDeals(searchResults, extractedSearchQuery, user?._id, session);
-            deals = result.deals;
-            totalValid = result.totalValid;
+            // Check cache first
+            const cacheKey = extractedSearchQuery.toLowerCase().trim();
+            const cachedResult = await getCachedSearch(cacheKey);
 
-            if (deals && deals.length > 0) {
-                aiDealSummary = await getAIRecommendation(deals, extractedSearchQuery, user);
+            if (cachedResult) {
+                deals = cachedResult.deals;
+                totalValid = cachedResult.totalValid;
+                aiDealSummary = cachedResult.aiDealSummary;
+            } else {
+                console.log(`🔍 Performing fresh search for: "${extractedSearchQuery}"`);
+                const searchResults = await searchAllSources(extractedSearchQuery, user);
+                const result = await findBestDeals(searchResults, extractedSearchQuery, user?._id, session);
+                deals = result.deals;
+                totalValid = result.totalValid;
+
+                // Skip AI recommendation for faster response
+                aiDealSummary = null;
+
+                // Cache the results ONLY if we found something
+                if (deals && deals.length > 0) {
+                    await setCachedSearch(cacheKey, { deals, totalValid, aiDealSummary: null });
+                }
             }
         }
 
@@ -1506,6 +1595,39 @@ app.post('/api/search', async (req, res) => {
         res.status(500).json({ error: 'Search failed' });
     }
 });
+
+// Lazy-load AI recommendation endpoint
+app.post('/api/recommendation', async (req, res) => {
+    try {
+        const { deals, searchQuery } = req.body;
+        const userId = req.userId;
+
+        if (!deals || !Array.isArray(deals) || deals.length === 0) {
+            return res.status(400).json({ error: 'Deals array is required' });
+        }
+
+        if (!searchQuery) {
+            return res.status(400).json({ error: 'Search query is required' });
+        }
+
+        let user = null;
+        if (userId) {
+            user = await User.findById(userId).select('-password');
+        }
+
+        console.log(`🤖 Generating AI recommendation for: "${searchQuery}"`);
+        const recommendation = await getAIRecommendation(deals, searchQuery, user);
+
+        res.json({
+            aiDealSummary: recommendation,
+            searchQuery
+        });
+    } catch (error) {
+        console.error('Recommendation error:', error);
+        res.status(500).json({ error: 'Failed to generate recommendation' });
+    }
+});
+
 
 // Route to handle direct shopping search via UI
 app.post('/api/shopping-search', async (req, res) => {
@@ -1544,7 +1666,7 @@ app.post('/api/shopping-search', async (req, res) => {
                 displayMessage = aiResponse;
             }
 
-            const searchResults = await searchAllSources(extractedSearchQuery);
+            const searchResults = await searchAllSources(extractedSearchQuery, user);
             const { deals, totalValid } = await findBestDeals(searchResults, extractedSearchQuery, user?._id, session);
             let aiDealSummary = null;
 
@@ -1559,7 +1681,7 @@ app.post('/api/shopping-search', async (req, res) => {
                 aiDealSummary
             });
         } else {
-            const searchResults = await searchAllSources(searchQuery || userMessage);
+            const searchResults = await searchAllSources(searchQuery || userMessage, user);
             const { deals, totalValid } = await findBestDeals(searchResults, searchQuery || userMessage, user?._id, session);
             const displayMessage = `Here are some deals I found for "${searchQuery || userMessage}". Want me to help compare them or suggest the best one?`;
 
@@ -1623,11 +1745,11 @@ async function runScheduledSearches() {
 
             console.log(`🔎 Searching for: "${party.itemName}" (User: ${party.userId}, Frequency: ${userFrequencyHours}h)`);
 
-            const results = await searchAllSources(party.searchQuery);
-            const { deals } = await findBestDeals(results, party.searchQuery, party.userId, null);
+            const user = await User.findById(party.userId).select('-password');
+            const searchResults = await searchAllSources(party.searchQuery, user);
+            const { deals } = await findBestDeals(searchResults, party.searchQuery, party.userId, null);
 
             if (deals && deals.length > 0) {
-                const user = await User.findById(party.userId).select('-password');
                 const aiSummary = await getAIRecommendation(deals, party.searchQuery, user);
 
                 const notification = new PartyNotification({
@@ -1668,6 +1790,62 @@ function startScheduler() {
 }
 
 startScheduler();
+
+// Execute search endpoint (called by frontend after chat determines intent)
+app.post('/api/execute-search', async (req, res) => {
+    try {
+        const { searchQuery, sessionId: clientSessionId } = req.body;
+        const userId = req.userId;
+
+        if (!searchQuery) {
+            return res.status(400).json({ error: 'Search query is required' });
+        }
+
+        let user = null;
+        if (userId) {
+            user = await User.findById(userId).select('-password');
+        }
+
+        const session = clientSessionId || generateSessionId(req);
+
+        console.log(`🔍 Executing search for: "${searchQuery}"`);
+
+        // Check cache first
+        const cacheKey = searchQuery.toLowerCase().trim();
+        const cachedResult = await getCachedSearch(cacheKey);
+
+        let deals = null;
+        let totalValid = 0;
+        let aiDealSummary = null;
+
+        if (cachedResult) {
+            deals = cachedResult.deals;
+            totalValid = cachedResult.totalValid;
+            aiDealSummary = cachedResult.aiDealSummary;
+        } else {
+            const searchResults = await searchAllSources(searchQuery, user);
+            const result = await findBestDeals(searchResults, searchQuery, user?._id, session);
+            deals = result.deals;
+            totalValid = result.totalValid;
+
+            // Cache the results ONLY if we found something
+            if (deals && deals.length > 0) {
+                await setCachedSearch(cacheKey, { deals, totalValid, aiDealSummary: null });
+            }
+        }
+
+        res.json({
+            deals,
+            totalValid,
+            aiDealSummary,
+            sessionId: session
+        });
+
+    } catch (error) {
+        console.error('Execute search error:', error);
+        res.status(500).json({ error: 'Search execution failed' });
+    }
+});
 
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));

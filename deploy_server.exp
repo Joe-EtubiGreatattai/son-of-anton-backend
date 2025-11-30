@@ -1,0 +1,59 @@
+#!/usr/bin/expect
+
+set timeout 30
+set file_path "/Users/mac/Documents/shoppingBot/node/server.js"
+set remote_user "root"
+set remote_host "31.42.188.106"
+set remote_path "/root/son-of-anton-backend/server.js"
+set password "U:.Qw33teC8hS2"
+
+# SCP the file
+spawn scp -o StrictHostKeyChecking=no $file_path $remote_user@$remote_host:$remote_path
+
+expect {
+    "password:" {
+        send "$password\r"
+    }
+    timeout {
+        puts "SCP timed out"
+        exit 1
+    }
+}
+
+expect eof
+
+# SSH to restart server
+spawn ssh -o StrictHostKeyChecking=no $remote_user@$remote_host
+
+expect {
+    "password:" {
+        send "$password\r"
+    }
+    timeout {
+        puts "SSH timed out"
+        exit 1
+    }
+}
+
+expect {
+    "root@" { }
+    "#" { }
+    "$" { }
+}
+
+send "cd /root/son-of-anton-backend\r"
+
+# Restart PM2
+send "pm2 restart server\r"
+
+expect {
+    "root@" { }
+    "#" { }
+    "$" { }
+}
+
+# Check logs
+send "pm2 logs server --lines 15 --nostream\r"
+
+send "exit\r"
+expect eof

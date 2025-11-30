@@ -1,0 +1,55 @@
+#!/usr/bin/expect
+
+set timeout 30
+spawn ssh -o StrictHostKeyChecking=no root@31.42.188.106
+
+expect {
+    "password:" {
+        send "U:.Qw33teC8hS2\r"
+    }
+    timeout {
+        puts "SSH timed out"
+        exit 1
+    }
+}
+
+expect {
+    "root@" { }
+    "#" { }
+    "$" { }
+}
+
+send "cd /root/son-of-anton-backend\r"
+
+# Update the GOOGLE_API_KEY in .env file
+send "sed -i 's/GOOGLE_API_KEY=.*/GOOGLE_API_KEY=AIzaSyDtGwZILABpIlQ1_loaR9dbHjj7H9cpZDM/' .env\r"
+
+expect {
+    "root@" { }
+    "#" { }
+    "$" { }
+}
+
+# Verify the change
+send "grep GOOGLE_API_KEY .env\r"
+
+expect {
+    "root@" { }
+    "#" { }
+    "$" { }
+}
+
+# Restart PM2
+send "pm2 restart server\r"
+
+expect {
+    "root@" { }
+    "#" { }
+    "$" { }
+}
+
+# Check status
+send "pm2 status\r"
+
+send "exit\r"
+expect eof

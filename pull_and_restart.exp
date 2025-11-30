@@ -1,0 +1,59 @@
+#!/usr/bin/expect
+
+set timeout 30
+spawn ssh -o StrictHostKeyChecking=no root@31.42.188.106
+
+expect {
+    "password:" {
+        send "U:.Qw33teC8hS2\r"
+    }
+    timeout {
+        puts "SSH timed out"
+        exit 1
+    }
+}
+
+expect {
+    "root@" { }
+    "#" { }
+    "$" { }
+}
+
+# Navigate to the backend directory
+send "cd /root/son-of-anton-backend\r"
+
+# Pull latest changes
+send "git pull origin main\r"
+expect {
+    "Already up to date" { puts "Already up to date" }
+    "Updating" { puts "Pulling changes..." }
+    "Fast-forward" { puts "Changes pulled" }
+    timeout { puts "Git pull timed out" }
+}
+
+# Check if using pm2 or node directly
+send "pm2 list\r"
+expect {
+    "root@" { }
+    "#" { }
+    "$" { }
+}
+
+# Try to restart with pm2
+send "pm2 restart server || pm2 restart all\r"
+expect {
+    "root@" { }
+    "#" { }
+    "$" { }
+}
+
+# Show pm2 status
+send "pm2 status\r"
+expect {
+    "root@" { }
+    "#" { }
+    "$" { }
+}
+
+send "exit\r"
+expect eof

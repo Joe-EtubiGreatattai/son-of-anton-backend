@@ -1,0 +1,99 @@
+#!/usr/bin/expect
+
+set timeout 30
+spawn ssh -o StrictHostKeyChecking=no root@31.42.188.106
+
+expect {
+    "password:" {
+        send "U:.Qw33teC8hS2\r"
+    }
+    timeout {
+        puts "SSH timed out"
+        exit 1
+    }
+}
+
+expect {
+    "root@" { }
+    "#" { }
+    "$" { }
+}
+
+send "cd /root/son-of-anton-backend\r"
+
+# Create the test script on the server
+send "cat > test_email_sending.js << 'EOF'\r"
+send "require('dotenv').config();\r"
+send "const { sendDealEmail } = require('./email-utils');\r"
+send "\r"
+send "const user = {\r"
+send "    username: 'Great Attai',\r"
+send "    email: 'greatattai442@gmail.com'\r"
+send "};\r"
+send "\r"
+send "const searchParty = {\r"
+send "    itemName: 'Test Search Party Item',\r"
+send "    maxPrice: 1000,\r"
+send "    preferences: 'Fast shipping, good condition'\r"
+send "};\r"
+send "\r"
+send "const deals = \[\r"
+send "    {\r"
+send "        title: 'Test Deal: MacBook Pro 14\"',\r"
+send "        price: 999.00,\r"
+send "        source: 'Amazon',\r"
+send "        link: 'https://amazon.com',\r"
+send "        image: 'https://m.media-amazon.com/images/I/618d5bS2lUL._AC_SL1500_.jpg',\r"
+send "        rating: '4.8',\r"
+send "        reviews: '1250'\r"
+send "    },\r"
+send "    {\r"
+send "        title: 'Test Deal: Sony WH-1000XM5',\r"
+send "        price: 348.00,\r"
+send "        source: 'Best Buy',\r"
+send "        link: 'https://bestbuy.com',\r"
+send "        image: 'https://m.media-amazon.com/images/I/51SKmu2G9FL._AC_SL1000_.jpg',\r"
+send "        rating: '4.7',\r"
+send "        reviews: '850'\r"
+send "    }\r"
+send "\];\r"
+send "\r"
+send "async function runTest() {\r"
+send "    console.log('Attempting to send test email to ' + user.email + '...');\r"
+send "    try {\r"
+send "        const success = await sendDealEmail(user, searchParty, deals);\r"
+send "        if (success) {\r"
+send "            console.log('✅ Test email sent successfully!');\r"
+send "        } else {\r"
+send "            console.error('❌ Failed to send test email.');\r"
+send "            process.exit(1);\r"
+send "        }\r"
+send "    } catch (error) {\r"
+send "        console.error('❌ Error during test:', error);\r"
+send "        process.exit(1);\r"
+send "    }\r"
+send "}\r"
+send "\r"
+send "runTest();\r"
+send "EOF\r"
+
+expect {
+    "root@" { }
+    "#" { }
+    "$" { }
+}
+
+# Run the test script
+send "node test_email_sending.js\r"
+
+expect {
+    "root@" { }
+    "#" { }
+    "$" { }
+}
+
+# Clean up
+send "rm test_email_sending.js\r"
+
+send "exit\r"
+expect eof

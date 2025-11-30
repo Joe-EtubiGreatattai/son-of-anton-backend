@@ -1,0 +1,118 @@
+#!/usr/bin/expect
+
+set timeout 30
+set file_path "/Users/mac/Documents/shoppingBot/node/email-utils.js"
+set remote_user "root"
+set remote_host "31.42.188.106"
+set remote_path "/root/son-of-anton-backend/email-utils.js"
+set password "U:.Qw33teC8hS2"
+
+# SCP the file
+spawn scp -o StrictHostKeyChecking=no $file_path $remote_user@$remote_host:$remote_path
+
+expect {
+    "password:" {
+        send "$password\r"
+    }
+    timeout {
+        puts "SCP timed out"
+        exit 1
+    }
+}
+
+expect eof
+
+# SSH to restart server and run test
+spawn ssh -o StrictHostKeyChecking=no $remote_user@$remote_host
+
+expect {
+    "password:" {
+        send "$password\r"
+    }
+    timeout {
+        puts "SSH timed out"
+        exit 1
+    }
+}
+
+expect {
+    "root@" { }
+    "#" { }
+    "$" { }
+}
+
+send "cd /root/son-of-anton-backend\r"
+
+# Restart PM2
+send "pm2 restart server\r"
+
+expect {
+    "root@" { }
+    "#" { }
+    "$" { }
+}
+
+# Run the test email script again (re-create it first as it was deleted)
+send "cat > test_email_sending.js << 'EOF'\r"
+send "require('dotenv').config();\r"
+send "const { sendDealEmail } = require('./email-utils');\r"
+send "\r"
+send "const user = {\r"
+send "    username: 'Great Attai',\r"
+send "    email: 'greatattai442@gmail.com'\r"
+send "};\r"
+send "\r"
+send "const searchParty = {\r"
+send "    itemName: 'Test Search Party Item (Orange Theme)',\r"
+send "    maxPrice: 1000,\r"
+send "    preferences: 'Fast shipping, good condition'\r"
+send "};\r"
+send "\r"
+send "const deals = \[\r"
+send "    {\r"
+send "        title: 'Test Deal: MacBook Pro 14\"',\r"
+send "        price: 999.00,\r"
+send "        source: 'Amazon',\r"
+send "        link: 'https://amazon.com',\r"
+send "        image: 'https://m.media-amazon.com/images/I/618d5bS2lUL._AC_SL1500_.jpg',\r"
+send "        rating: '4.8',\r"
+send "        reviews: '1250'\r"
+send "    }\r"
+send "\];\r"
+send "\r"
+send "async function runTest() {\r"
+send "    console.log('Attempting to send test email to ' + user.email + '...');\r"
+send "    try {\r"
+send "        const success = await sendDealEmail(user, searchParty, deals);\r"
+send "        if (success) {\r"
+send "            console.log('✅ Test email sent successfully!');\r"
+send "        } else {\r"
+send "            console.error('❌ Failed to send test email.');\r"
+send "            process.exit(1);\r"
+send "        }\r"
+send "    } catch (error) {\r"
+send "        console.error('❌ Error during test:', error);\r"
+send "        process.exit(1);\r"
+send "    }\r"
+send "}\r"
+send "\r"
+send "runTest();\r"
+send "EOF\r"
+
+expect {
+    "root@" { }
+    "#" { }
+    "$" { }
+}
+
+send "node test_email_sending.js\r"
+
+expect {
+    "root@" { }
+    "#" { }
+    "$" { }
+}
+
+send "rm test_email_sending.js\r"
+send "exit\r"
+expect eof

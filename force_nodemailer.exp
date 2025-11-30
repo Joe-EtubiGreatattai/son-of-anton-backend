@@ -1,0 +1,52 @@
+#!/usr/bin/expect
+
+set timeout 30
+spawn ssh -o StrictHostKeyChecking=no root@31.42.188.106
+
+expect {
+    "password:" {
+        send "U:.Qw33teC8hS2\r"
+    }
+    timeout {
+        puts "SSH timed out"
+        exit 1
+    }
+}
+
+expect {
+    "root@" { }
+    "#" { }
+    "$" { }
+}
+
+send "cd /root/son-of-anton-backend\r"
+
+# Comment out SendGrid API Key in .env to force Nodemailer
+send "sed -i 's/^SENDGRID_API_KEY/#SENDGRID_API_KEY/' .env\r"
+
+expect {
+    "root@" { }
+    "#" { }
+    "$" { }
+}
+
+# Verify change
+send "grep SENDGRID_API_KEY .env\r"
+
+expect {
+    "root@" { }
+    "#" { }
+    "$" { }
+}
+
+# Restart PM2 to pick up changes
+send "pm2 restart server\r"
+
+expect {
+    "root@" { }
+    "#" { }
+    "$" { }
+}
+
+send "exit\r"
+expect eof

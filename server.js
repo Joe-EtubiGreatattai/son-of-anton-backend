@@ -21,6 +21,7 @@ app.use(cors(corsOptions));
 // Load API keys and configuration from environment variables
 const SERP_API_KEY = process.env.SERP_API_KEY;
 const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY;
+const EXCHANGE_RATE_API_KEY = process.env.EXCHANGE_RATE_API_KEY;
 const JWT_SECRET = process.env.JWT_SECRET || 'your_jwt_secret';
 
 // Base URL for SerpAPI
@@ -38,6 +39,10 @@ const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/chat_app';
 // Search frequency configuration
 const SEARCH_FREQUENCY_HOURS = parseInt(process.env.SEARCH_FREQUENCY_HOURS, 10) || null;
 const SEARCH_FREQUENCY_MINUTES = parseInt(process.env.SEARCH_FREQUENCY_MINUTES, 10) || 10;
+
+// Exchange rate update frequency configuration
+const EXCHANGE_RATE_UPDATE_HOURS = parseInt(process.env.EXCHANGE_RATE_UPDATE_HOURS, 10) || 6;
+
 
 // Affiliate configuration
 const AFFILIATE_CONFIGS = {
@@ -152,7 +157,7 @@ const userSchema = new mongoose.Schema({
             enum: ['Best Deal', 'Fast Shipping', 'Trusted Brands', 'Balanced', 'Quality First'],
             default: 'Balanced',
         },
-        country: { type: String, default: 'US' },
+        country: { type: String, default: 'NG' }, // Default to Nigeria
     },
     searchPreferences: {
         quickSearchMode: { type: Boolean, default: true },
@@ -258,6 +263,15 @@ const partyNotificationSchema = new mongoose.Schema({
 
 const PartyNotification = mongoose.model('PartyNotification', partyNotificationSchema);
 
+// Exchange Rate Schema and Model
+const exchangeRateSchema = new mongoose.Schema({
+    baseCurrency: { type: String, required: true, unique: true, default: 'USD' },
+    rates: { type: Map, of: Number, required: true },
+    lastUpdated: { type: Date, default: Date.now }
+});
+
+const ExchangeRate = mongoose.model('ExchangeRate', exchangeRateSchema);
+
 // Middleware to authenticate and retrieve user from token
 const authenticateToken = (req, res, next) => {
     const authHeader = req.headers.authorization;
@@ -283,11 +297,43 @@ const authenticateToken = (req, res, next) => {
 
 app.use(authenticateToken);
 
+// Search Amazon via SerpAPI (Fallback)
+async function searchAmazonViaSerpApi(searchQuery) {
+    try {
+        console.log(`⚠️ Using SerpAPI fallback for Amazon search: "${searchQuery}"`);
+        const params = {
+            q: searchQuery,
+            api_key: SERP_API_KEY,
+            engine: 'amazon',
+            type: 'search',
+            amazon_domain: 'amazon.com'
+        };
+
+        const response = await axios.get(SERP_BASE_URL, { params });
+        const results = response.data.search_results || [];
+
+        return results.map(item => ({
+            asin: item.asin,
+            title: item.title,
+            price: item.price ? item.price.value : null,
+            thumbnail: item.thumbnail,
+            link: item.link,
+            source: 'Amazon',
+            rating: item.rating,
+            reviews: item.reviews
+        })).filter(p => p.price !== null);
+
+    } catch (error) {
+        console.error('Error searching Amazon via SerpAPI:', error.message);
+        return [];
+    }
+}
+
 // Search products directly from Amazon Product Advertising API
 async function searchAmazonProducts(searchQuery) {
     if (!AMAZON_API_ENABLED || !amazonApi || !ProductAdvertisingAPIv1) {
-        console.warn('Amazon PA-API not enabled or SDK not available, skipping direct Amazon search.');
-        return [];
+        console.warn('Amazon PA-API not enabled or SDK not available, using SerpAPI fallback.');
+        return searchAmazonViaSerpApi(searchQuery);
     }
 
     const partnerTag = AFFILIATE_CONFIGS.amazon.tag;
@@ -312,7 +358,8 @@ async function searchAmazonProducts(searchQuery) {
         amazonApi.searchItems(searchItemsRequest, function (error, data, response) {
             if (error) {
                 console.error('Error calling Amazon PA-API:', error.message || error);
-                return resolve([]);
+                console.log('🔄 Switching to SerpAPI fallback for Amazon...');
+                return resolve(searchAmazonViaSerpApi(searchQuery));
             }
 
             try {
@@ -379,16 +426,216 @@ async function searchAmazonProducts(searchQuery) {
                 return resolve(mapped);
             } catch (parseError) {
                 console.error('Error parsing Amazon PA-API response:', parseError.message || parseError);
-                return resolve([]);
+                return resolve(searchAmazonViaSerpApi(searchQuery));
             }
         });
     });
 }
 
-// Unified search: Amazon (direct API) + SerpAPI (Google Shopping, non-Amazon only)
-async function searchAllSources(searchQuery, user = null) {
-    const country = user?.preferences?.country || 'US';
+// Search Jumia Nigeria
+async function searchJumiaNigeria(searchQuery) {
+    try {
+        console.log(`🇳🇬 Searching Jumia Nigeria for: "${searchQuery}"`);
+        const params = {
+            q: `site:jumia.com.ng ${searchQuery}`,
+            api_key: SERP_API_KEY,
+            engine: 'google',
+            num: 20, // Increased to get more results
+            gl: 'ng',
+            hl: 'en'
+        };
 
+        const response = await axios.get(SERP_BASE_URL, { params });
+        const organicResults = response.data.organic_results || [];
+
+        const jumiaProducts = organicResults
+            .filter(result => result.link && result.link.includes('jumia.com.ng'))
+            .map(result => {
+                // Extract price from snippet or title
+                const priceMatch = result.snippet?.match(/₦\s?([\d,]+)/);
+                const price = priceMatch ? parseFloat(priceMatch[1].replace(/,/g, '')) : null;
+
+                return {
+                    title: result.title || 'Unknown Product',
+                    price: price,
+                    source: 'Jumia Nigeria',
+                    link: result.link,
+                    thumbnail: result.thumbnail || null,
+                    rating: 'N/A',
+                    reviews: 'N/A'
+                };
+            })
+            .filter(p => p.price !== null);
+
+        console.log(`✅ Found ${jumiaProducts.length} products on Jumia Nigeria`);
+        return jumiaProducts;
+    } catch (error) {
+        console.error('Error searching Jumia Nigeria:', error.message);
+        return [];
+    }
+}
+
+// Search Konga Nigeria
+async function searchKongaNigeria(searchQuery) {
+    try {
+        console.log(`🇳🇬 Searching Konga for: "${searchQuery}"`);
+        const params = {
+            q: `site:konga.com ${searchQuery}`,
+            api_key: SERP_API_KEY,
+            engine: 'google',
+            num: 20, // Increased to get more results
+            gl: 'ng',
+            hl: 'en'
+        };
+
+        const response = await axios.get(SERP_BASE_URL, { params });
+        const organicResults = response.data.organic_results || [];
+
+        const kongaProducts = organicResults
+            .filter(result => result.link && result.link.includes('konga.com'))
+            .map(result => {
+                // Extract price from snippet or title
+                const priceMatch = result.snippet?.match(/₦\s?([\d,]+)/);
+                const price = priceMatch ? parseFloat(priceMatch[1].replace(/,/g, '')) : null;
+
+                return {
+                    title: result.title || 'Unknown Product',
+                    price: price,
+                    source: 'Konga',
+                    link: result.link,
+                    thumbnail: result.thumbnail || null,
+                    rating: 'N/A',
+                    reviews: 'N/A'
+                };
+            })
+            .filter(p => p.price !== null);
+
+        console.log(`✅ Found ${kongaProducts.length} products on Konga`);
+        return kongaProducts;
+    } catch (error) {
+        console.error('Error searching Konga:', error.message);
+        return [];
+    }
+}
+
+// Unified search: Nigerian platforms (Jumia, Konga) + Amazon + Google Shopping
+async function searchAllSources(searchQuery, user = null) {
+    // Default to Nigeria for all searches
+    const country = user?.preferences?.country || 'NG';
+
+    console.log(`🌍 Searching with country preference: ${country}`);
+
+    // For Nigerian users, prioritize Nigerian platforms
+    if (country === 'NG') {
+        const [jumiaProducts, kongaProducts, amazonProducts, serpResults] = await Promise.all([
+            searchJumiaNigeria(searchQuery).catch(err => {
+                console.error('Jumia search error:', err.message);
+                return [];
+            }),
+            searchKongaNigeria(searchQuery).catch(err => {
+                console.error('Konga search error:', err.message);
+                return [];
+            }),
+            searchAmazonProducts(searchQuery).catch(err => {
+                console.error('Amazon search error:', err.message);
+                return [];
+            }),
+            searchItem(searchQuery, country).catch((err) => {
+                console.error('SerpAPI search error:', err.message || err);
+                return null;
+            })
+        ]);
+
+        console.log(`📊 Nigerian Search Results: Jumia=${jumiaProducts.length}, Konga=${kongaProducts.length}, Amazon=${amazonProducts.length}, Google Shopping=${serpResults?.shopping_results?.length || 0}`);
+
+        const nigerianResults = [];
+        const foreignResults = [];
+
+        // Collect Jumia Results (Nigerian)
+        for (const p of jumiaProducts) {
+            nigerianResults.push({
+                price: p.price,
+                thumbnail: p.thumbnail,
+                link: p.link,
+                source: p.source,
+                title: p.title,
+                rating: p.rating,
+                reviews: p.reviews,
+                isNigerian: true
+            });
+        }
+
+        // Collect Konga Results (Nigerian)
+        for (const p of kongaProducts) {
+            nigerianResults.push({
+                price: p.price,
+                thumbnail: p.thumbnail,
+                link: p.link,
+                source: p.source,
+                title: p.title,
+                rating: p.rating,
+                reviews: p.reviews,
+                isNigerian: true
+            });
+        }
+
+        // Collect Google Shopping Results (Check for Nigerian vs Foreign)
+        if (serpResults && serpResults.shopping_results) {
+            for (const item of serpResults.shopping_results) {
+                const source = item.source || item.merchant || item.store || '';
+                // Skip if already added from Jumia/Konga
+                if (source && (source.toLowerCase().includes('jumia') || source.toLowerCase().includes('konga'))) {
+                    continue;
+                }
+
+                // Check if it's a Nigerian source (basic check + currency check if available)
+                // For now, we assume Google Shopping NG returns mostly NG results, but let's be safe
+                // If the currency is NGN, it's definitely Nigerian.
+                // Since we don't have currency field easily here without parsing, we'll assume based on the search context 'NG'
+                // But let's treat them as Nigerian for now as they come from the NG gl parameter.
+                nigerianResults.push({
+                    ...item,
+                    isNigerian: true
+                });
+            }
+        }
+
+        // Collect Amazon Results (Foreign)
+        for (const p of amazonProducts) {
+            foreignResults.push({
+                price: p.price,
+                thumbnail: p.thumbnail,
+                link: p.link,
+                source: p.source,
+                title: p.title,
+                rating: p.rating,
+                reviews: p.reviews,
+                isNigerian: false
+            });
+        }
+
+        // Blend Results: Favour Nigerian (2:1 ratio)
+        const blendedResults = [];
+        let ngIndex = 0;
+        let foreignIndex = 0;
+
+        while (ngIndex < nigerianResults.length || foreignIndex < foreignResults.length) {
+            // Add up to 2 Nigerian items
+            for (let i = 0; i < 2; i++) {
+                if (ngIndex < nigerianResults.length) {
+                    blendedResults.push(nigerianResults[ngIndex++]);
+                }
+            }
+            // Add 1 Foreign item
+            if (foreignIndex < foreignResults.length) {
+                blendedResults.push(foreignResults[foreignIndex++]);
+            }
+        }
+
+        return { shopping_results: blendedResults };
+    }
+
+    // For non-Nigerian users, use original logic
     const [amazonProducts, serpResults] = await Promise.all([
         searchAmazonProducts(searchQuery),
         searchItem(searchQuery, country).catch((err) => {
@@ -1146,14 +1393,14 @@ async function searchItem(itemName, country = 'US') {
             q: itemName,
             api_key: SERP_API_KEY,
             engine: 'google_shopping',
-            num: 10
+            num: 20 // Increased to get more results
         };
 
         if (country === 'NG') {
             params.gl = 'ng';
             params.google_domain = 'google.com.ng';
-            params.location = 'Nigeria';
             params.currency = 'NGN';
+            // Removed 'location' parameter as it can cause 400 errors if not exact
         }
 
         const response = await axios.get(SERP_BASE_URL, { params });
@@ -1266,6 +1513,109 @@ function ensureValidProductLink(originalLink, title, source) {
     }
 }
 
+// Fetch and Store Exchange Rates in Database (Cron Job Function)
+async function fetchAndStoreExchangeRates() {
+    try {
+        console.log('💱 Fetching fresh exchange rates from API...');
+        const response = await axios.get(`https://v6.exchangerate-api.com/v6/${EXCHANGE_RATE_API_KEY}/latest/USD`);
+
+        if (response.data && response.data.result === 'success') {
+            const rates = response.data.conversion_rates;
+
+            // Store in database
+            await ExchangeRate.findOneAndUpdate(
+                { baseCurrency: 'USD' },
+                {
+                    baseCurrency: 'USD',
+                    rates: rates,
+                    lastUpdated: new Date()
+                },
+                { upsert: true, new: true }
+            );
+
+            console.log('✅ Exchange rates fetched and stored in database successfully.');
+            return true;
+        } else {
+            console.error('❌ Failed to fetch exchange rates from API:', response.data);
+            return false;
+        }
+    } catch (error) {
+        console.error('❌ Error fetching and storing exchange rates:', error.message);
+        return false;
+    }
+}
+
+// Get Exchange Rates from Database
+async function getExchangeRates() {
+    try {
+        const exchangeRateDoc = await ExchangeRate.findOne({ baseCurrency: 'USD' });
+
+        if (!exchangeRateDoc) {
+            console.warn('⚠️ No exchange rates found in database. Fetching now...');
+            await fetchAndStoreExchangeRates();
+            // Try again after fetching
+            const newDoc = await ExchangeRate.findOne({ baseCurrency: 'USD' });
+            if (newDoc) {
+                return Object.fromEntries(newDoc.rates);
+            }
+            return null;
+        }
+
+        // Convert Map to plain object for compatibility
+        const rates = Object.fromEntries(exchangeRateDoc.rates);
+        console.log('✅ Retrieved exchange rates from database.');
+        return rates;
+    } catch (error) {
+        console.error('❌ Error retrieving exchange rates from database:', error.message);
+        return null;
+    }
+}
+
+
+// Detect Currency from Price String
+function detectCurrency(priceStr, source) {
+    if (typeof priceStr !== 'string') {
+        // Amazon PA-API returns numbers, usually in the marketplace currency.
+        // Assuming US/Global for now unless we check marketplace.
+        // For this implementation, we'll default to USD for Amazon if number.
+        return 'USD';
+    }
+
+    const upper = priceStr.toUpperCase();
+    if (upper.includes('₦') || upper.includes('NGN')) return 'NGN';
+    if (upper.includes('£') || upper.includes('GBP')) return 'GBP';
+    if (upper.includes('€') || upper.includes('EUR')) return 'EUR';
+    if (upper.includes('$') || upper.includes('USD')) return 'USD';
+
+    // Fallback based on source if possible, otherwise USD
+    if (source && source.toLowerCase().includes('amazon.co.uk')) return 'GBP';
+
+    return 'USD'; // Default
+}
+
+// Convert Price to NGN
+async function convertToNGN(price, currency) {
+    if (currency === 'NGN') return price;
+
+    const rates = await getExchangeRates();
+    if (!rates) return price; // Fallback to original if no rates
+
+    const ngnRate = rates['NGN'];
+    const fromRate = rates[currency];
+
+    if (!ngnRate || !fromRate) return price;
+
+    // Convert to USD first (base), then to NGN
+    // Rate is "How much of X for 1 USD"
+    // Amount in USD = Amount / Rate(X)
+    // Amount in NGN = Amount in USD * Rate(NGN)
+
+    const priceInUSD = price / fromRate;
+    const priceInNGN = priceInUSD * ngnRate;
+
+    return Math.round(priceInNGN); // Round to nearest Naira
+}
+
 // Add affiliate code to product links
 function addAffiliateLink(link, source) {
     try {
@@ -1368,9 +1718,31 @@ async function findBestDeals(results, searchQuery = '', userId = null, sessionId
             }
         }
 
+        // Check if source is Nigerian platform (prices already in NGN)
+        const isNigerianSource = source && (
+            source.toLowerCase().includes('jumia') ||
+            source.toLowerCase().includes('konga') ||
+            source.toLowerCase().includes('jiji') ||
+            source.toLowerCase().includes('slot')
+        );
+
+        let convertedPrice;
+        if (isNigerianSource) {
+            // Nigerian platforms already have NGN prices, no conversion needed
+            convertedPrice = price;
+            console.log(`💚 Nigerian source detected (${source}): Price already in NGN: ₦${price}`);
+        } else {
+            // International sources need conversion
+            const currency = detectCurrency(item.price, source);
+            convertedPrice = await convertToNGN(price, currency);
+            console.log(`🔄 Converting ${currency} ${price} to NGN: ₦${convertedPrice}`);
+        }
+
         validResults.push({
             title,
-            price,
+            price: convertedPrice,
+            originalPrice: price,
+            originalCurrency: isNigerianSource ? 'NGN' : detectCurrency(item.price, source),
             source,
             link: affiliateLink,
             image: imageUrl,
@@ -1834,11 +2206,80 @@ app.post('/api/execute-search', async (req, res) => {
             }
         }
 
+        // Auto-create search party if no results found and user is authenticated
+        let partyCreated = false;
+        let partyDetails = null;
+        let creativeMessage = null;
+
+        if ((!deals || deals.length === 0) && userId) {
+            try {
+                console.log(`🎉 No results found. Creating search party for user ${userId}...`);
+
+                // Check if a party already exists for this query
+                const existingParty = await Party.findOne({
+                    userId: userId,
+                    searchQuery: searchQuery,
+                    active: true
+                });
+
+                if (!existingParty) {
+                    // Create new search party
+                    const party = new Party({
+                        userId: userId,
+                        itemName: searchQuery,
+                        searchQuery: searchQuery,
+                        searchFrequencyHours: SEARCH_FREQUENCY_HOURS || 6,
+                        aiStyle: user?.preferences?.shoppingStyle || 'Balanced',
+                        stores: ['amazon', 'ebay', 'walmart', 'bestbuy'],
+                        maxPrice: user?.searchPreferences?.maxPrice || null,
+                        minPrice: user?.searchPreferences?.minPrice || 0,
+                        active: true,
+                        notificationChannel: 'in_app'
+                    });
+
+                    await party.save();
+                    partyCreated = true;
+                    partyDetails = {
+                        id: party._id,
+                        itemName: party.itemName,
+                        searchFrequencyHours: party.searchFrequencyHours
+                    };
+
+                    console.log(`✅ Search party created successfully: ${party._id}`);
+                } else {
+                    console.log(`ℹ️ Search party already exists for this query: ${existingParty._id}`);
+                    partyDetails = {
+                        id: existingParty._id,
+                        itemName: existingParty.itemName,
+                        searchFrequencyHours: existingParty.searchFrequencyHours
+                    };
+                }
+
+                // Generate creative message
+                const messages = [
+                    `🔍 No luck this time, but I've got your back! I've set up a Search Party to hunt down "${searchQuery}" for you. I'll keep my eyes peeled 24/7 and ping you the moment I find a great deal! 🎯`,
+                    `🕵️ Hmm, "${searchQuery}" is playing hard to get! Don't worry - I've assembled a dedicated Search Party that'll scour the web every ${partyDetails.searchFrequencyHours} hours. You'll be the first to know when we strike gold! 💎`,
+                    `🚀 "${searchQuery}" isn't available right now, but your personal Search Party is on the case! I'll be checking top stores around the clock and will notify you the instant something pops up! 🎁`,
+                    `🎯 Couldn't find "${searchQuery}" at the moment, but I'm not giving up! Your Search Party is now active and will keep hunting. Sit back, relax, and I'll alert you when the perfect deal appears! ✨`,
+                    `🔎 "${searchQuery}" is currently out of sight, but not out of mind! I've deployed a Search Party to track it down. You'll get a notification as soon as we find what you're looking for! 🎊`
+                ];
+
+                creativeMessage = messages[Math.floor(Math.random() * messages.length)];
+
+            } catch (partyError) {
+                console.error('Error creating search party:', partyError);
+                // Don't fail the request if party creation fails
+            }
+        }
+
         res.json({
             deals,
             totalValid,
             aiDealSummary,
-            sessionId: session
+            sessionId: session,
+            partyCreated,
+            partyDetails,
+            noResultsMessage: creativeMessage
         });
 
     } catch (error) {
@@ -1846,6 +2287,28 @@ app.post('/api/execute-search', async (req, res) => {
         res.status(500).json({ error: 'Search execution failed' });
     }
 });
+
+
+// Initialize Exchange Rate Cron Job
+const EXCHANGE_RATE_INTERVAL = EXCHANGE_RATE_UPDATE_HOURS * 60 * 60 * 1000; // Convert hours to milliseconds
+
+// Fetch exchange rates immediately on startup
+console.log('🚀 Initializing exchange rates on server startup...');
+fetchAndStoreExchangeRates().then((success) => {
+    if (success) {
+        console.log('✅ Initial exchange rates loaded successfully.');
+    } else {
+        console.warn('⚠️ Failed to load initial exchange rates. Will retry on next scheduled update.');
+    }
+});
+
+// Schedule periodic updates
+setInterval(async () => {
+    console.log(`⏰ Running scheduled exchange rate update (every ${EXCHANGE_RATE_UPDATE_HOURS} hours)...`);
+    await fetchAndStoreExchangeRates();
+}, EXCHANGE_RATE_INTERVAL);
+
+console.log(`✅ Exchange rate cron job scheduled to run every ${EXCHANGE_RATE_UPDATE_HOURS} hours.`);
 
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));

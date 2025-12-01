@@ -79,4 +79,5 @@ docker-compose.override.yml
 
 # Misc
 coverage-report/
-*.iml*.exp
+*.iml
+*.exp

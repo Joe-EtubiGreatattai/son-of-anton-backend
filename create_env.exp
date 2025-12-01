@@ -1,0 +1,88 @@
+#!/usr/bin/expect
+
+set timeout 30
+spawn ssh -o StrictHostKeyChecking=no root@31.42.188.106
+
+expect {
+    "password:" {
+        send "U:.Qw33teC8hS2\r"
+    }
+    timeout {
+        puts "SSH timed out"
+        exit 1
+    }
+}
+
+expect {
+    "root@" { }
+    "#" { }
+    "$" { }
+}
+
+send "cd /root/son-of-anton-backend\r"
+
+# Create .env file
+send "cat > .env << 'EOF'\r"
+send "SERP_API_KEY=6b8f496d91f4c52df9999f724c0756f87c63fb840bdf4a50a5a71337641215ce\r"
+send "GOOGLE_API_KEY=AIzaSyADRG85rWWBqhKUBT9mOkrEZ8B8C4bBgc4\r"
+send "PORT=5000\r"
+send "MONGO_URI=YOUR_MONGODB_URI\r"
+send "MONGODB_URI=YOUR_MONGODB_URI\r"
+send "JWT_SECRET=sonofantonsecretkey\r"
+send "EMAIL_SERVICE=gmail\r"
+send "EMAIL_USER=greatattai442442@gmail.com\r"
+send "EMAIL_PASS=YOUR_EMAIL_PASSWORD\r"
+send "\r"
+send "SENDGRID_API_KEY=YOUR_SENDGRID_API_KEY\r"
+send "SENDGRID_FROM_EMAIL=joeetubigreatattai@gmail.com\r"
+send "SENDGRID_FROM_NAME=Son of Anton\r"
+send "\r"
+send "# Amazon Associates\r"
+send "AMAZON_AFFILIATE_ENABLED=true\r"
+send "AMAZON_AFFILIATE_TAG=sagato-20\r"
+send "AMAZON_PAAPI_ACCESS_KEY=your_access_key\r"
+send "AMAZON_PAAPI_SECRET_KEY=your_secret_key\r"
+send "AMAZON_PAAPI_HOST=webservices.amazon.com\r"
+send "AMAZON_PAAPI_REGION=us-east-1\r"
+send "\r"
+send "# eBay Partner Network\r"
+send "EBAY_AFFILIATE_ENABLED=true\r"
+send "EBAY_CAMPAIGN_ID=5338759945\r"
+send "\r"
+send "# Walmart Affiliate\r"
+send "WALMART_AFFILIATE_ENABLED=true\r"
+send "WALMART_PUBLISHER_ID=your-publisher-id\r"
+send "\r"
+send "# Search Frequency\r"
+send "SEARCH_FREQUENCY_MINUTES=10\r"
+send "EOF\r"
+
+expect {
+    "root@" { }
+    "#" { }
+    "$" { }
+}
+
+# Verify file was created
+send "cat .env | head -10\r"
+
+expect {
+    "root@" { }
+    "#" { }
+    "$" { }
+}
+
+# Restart PM2
+send "pm2 restart server\r"
+
+expect {
+    "root@" { }
+    "#" { }
+    "$" { }
+}
+
+# Check logs
+send "pm2 logs server --lines 20 --nostream\r"
+
+send "exit\r"
+expect eof

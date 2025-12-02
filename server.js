@@ -1091,6 +1091,51 @@ app.delete('/api/party/:id', authenticateToken, async (req, res) => {
     }
 });
 
+// Alias endpoint for frontend compatibility - Get search parties
+app.get('/api/search-parties', authenticateToken, async (req, res) => {
+    try {
+        if (!req.userId) {
+            return res.status(401).json({ error: 'Unauthorized' });
+        }
+
+        const parties = await Party.find({ userId: req.userId })
+            .sort({ createdAt: -1 });
+
+        res.json(parties);
+    } catch (error) {
+        console.error('Get search parties error:', error);
+        res.status(500).json({ error: 'Failed to retrieve search parties' });
+    }
+});
+
+// Toggle search party active status
+app.put('/api/search-parties/:id/toggle', authenticateToken, async (req, res) => {
+    try {
+        if (!req.userId) {
+            return res.status(401).json({ error: 'Unauthorized' });
+        }
+
+        const { id } = req.params;
+        const party = await Party.findOne({ _id: id, userId: req.userId });
+
+        if (!party) {
+            return res.status(404).json({ error: 'Party not found' });
+        }
+
+        party.active = !party.active;
+        await party.save();
+
+        res.json({
+            message: 'Party status updated',
+            party
+        });
+    } catch (error) {
+        console.error('Toggle party error:', error);
+        res.status(500).json({ error: 'Failed to toggle party status' });
+    }
+});
+
+
 // Get notifications for a user
 app.get('/api/party-notifications', authenticateToken, async (req, res) => {
     try {
@@ -1135,6 +1180,49 @@ app.put('/api/party-notifications/:id/read', authenticateToken, async (req, res)
     }
 });
 
+// Get user's conversation history
+app.get('/api/conversations', authenticateToken, async (req, res) => {
+    try {
+        if (!req.userId) {
+            return res.status(401).json({ error: 'Unauthorized' });
+        }
+
+        const conversations = await Conversation.find({ userId: req.userId })
+            .sort({ updatedAt: -1 })
+            .limit(50);
+
+        res.json(conversations);
+    } catch (error) {
+        console.error('Get conversations error:', error);
+        res.status(500).json({ error: 'Failed to retrieve conversations' });
+    }
+});
+
+// Get specific conversation by sessionId
+app.get('/api/conversations/:sessionId', authenticateToken, async (req, res) => {
+    try {
+        if (!req.userId) {
+            return res.status(401).json({ error: 'Unauthorized' });
+        }
+
+        const { sessionId } = req.params;
+        const conversation = await Conversation.findOne({
+            sessionId,
+            userId: req.userId
+        });
+
+        if (!conversation) {
+            return res.status(404).json({ error: 'Conversation not found' });
+        }
+
+        res.json(conversation);
+    } catch (error) {
+        console.error('Get conversation error:', error);
+        res.status(500).json({ error: 'Failed to retrieve conversation' });
+    }
+});
+
+
 // Generate a contextual session ID (simplified)
 function generateSessionId(req) {
     const ip = req.ip || req.connection.remoteAddress || 'unknown-ip';
@@ -1166,6 +1254,21 @@ const searchResultSchema = new mongoose.Schema({
 });
 
 const SearchResult = mongoose.model('SearchResult', searchResultSchema);
+
+// Conversation Schema for persistent storage
+const conversationSchema = new mongoose.Schema({
+    sessionId: { type: String, required: true, unique: true, index: true },
+    userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', index: true },
+    messages: [{
+        role: { type: String, enum: ['user', 'assistant'], required: true },
+        content: { type: String, required: true },
+        timestamp: { type: Date, default: Date.now }
+    }],
+    createdAt: { type: Date, default: Date.now },
+    updatedAt: { type: Date, default: Date.now }
+});
+
+const Conversation = mongoose.model('Conversation', conversationSchema);
 
 // Database cache configuration
 const DB_CACHE_TTL = 24 * 60 * 60 * 1000; // 24 hours
@@ -1862,6 +1965,24 @@ app.post('/api/chat', async (req, res) => {
 
         sessionHistory.push({ role: 'assistant', content: aiResponse });
         conversationHistory.set(session, sessionHistory);
+
+        // Save conversation to database
+        try {
+            await Conversation.findOneAndUpdate(
+                { sessionId: session },
+                {
+                    sessionId: session,
+                    userId: userId || null,
+                    messages: sessionHistory,
+                    updatedAt: new Date()
+                },
+                { upsert: true, new: true }
+            );
+            console.log(`💾 Conversation saved to database: ${session}`);
+        } catch (dbError) {
+            console.error('Error saving conversation to database:', dbError);
+            // Don't fail the request if database save fails
+        }
 
         const displayMessage = formatDisplayMessage(aiResponse);
 

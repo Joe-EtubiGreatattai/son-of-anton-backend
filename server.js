@@ -1240,8 +1240,25 @@ app.post('/api/share/create', async (req, res) => {
     try {
         const { type, data } = req.body;
 
+        console.log('📤 Share link creation request:', { type, data: typeof data === 'string' ? data.substring(0, 50) : data });
+
         if (!['conversation', 'product'].includes(type)) {
             return res.status(400).json({ error: 'Invalid share type' });
+        }
+
+        // Validate conversation exists if sharing a conversation
+        if (type === 'conversation') {
+            if (!data || typeof data !== 'string') {
+                console.error('❌ Invalid conversation data:', data);
+                return res.status(400).json({ error: 'Invalid conversation data. SessionId is required.' });
+            }
+
+            const conversation = await Conversation.findOne({ sessionId: data });
+            if (!conversation) {
+                console.error('❌ Conversation not found for sessionId:', data);
+                return res.status(404).json({ error: 'Conversation not found. Please ensure you have sent at least one message.' });
+            }
+            console.log('✅ Conversation found:', conversation._id);
         }
 
         // Generate a short random ID (8 chars)
@@ -1268,7 +1285,10 @@ app.post('/api/share/create', async (req, res) => {
 
         await sharedLink.save();
 
-        res.json({ shareId, url: `https://sonofanton.live/share/${shareId}` });
+        const shareUrl = `https://sonofanton.live/share/${shareId}`;
+        console.log('✅ Share link created:', shareUrl);
+
+        res.json({ shareId, url: shareUrl });
     } catch (error) {
         console.error('Create share link error:', error);
         res.status(500).json({ error: 'Failed to create share link' });
@@ -1280,11 +1300,16 @@ app.get('/api/share/:shareId', async (req, res) => {
     try {
         const { shareId } = req.params;
 
+        console.log('🔍 Share link request for:', shareId);
+
         const sharedLink = await SharedLink.findOne({ shareId });
 
         if (!sharedLink) {
-            return res.status(404).json({ error: 'Shared content not found' });
+            console.error('❌ Share link not found:', shareId);
+            return res.status(404).json({ error: 'Share link not found or has expired' });
         }
+
+        console.log('✅ Share link found:', { type: sharedLink.type, createdAt: sharedLink.createdAt });
 
         // Increment views
         sharedLink.views += 1;
@@ -1294,11 +1319,14 @@ app.get('/api/share/:shareId', async (req, res) => {
 
         // If it's a conversation, fetch the actual conversation data
         if (sharedLink.type === 'conversation' && typeof sharedLink.data === 'string') {
+            console.log('📖 Fetching conversation with sessionId:', sharedLink.data);
             const conversation = await Conversation.findOne({ sessionId: sharedLink.data });
             if (conversation) {
+                console.log('✅ Conversation found with', conversation.messages.length, 'messages');
                 content = conversation;
             } else {
-                return res.status(404).json({ error: 'Original conversation not found' });
+                console.error('❌ Original conversation not found for sessionId:', sharedLink.data);
+                return res.status(404).json({ error: 'Original conversation has been deleted or is no longer available' });
             }
         }
 

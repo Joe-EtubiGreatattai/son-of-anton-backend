@@ -1101,7 +1101,20 @@ app.get('/api/search-parties', authenticateToken, async (req, res) => {
         const parties = await Party.find({ userId: req.userId })
             .sort({ createdAt: -1 });
 
-        res.json(parties);
+        // Transform data to match frontend expectations
+        const transformedParties = parties.map(party => ({
+            _id: party._id,
+            itemName: party.itemName,
+            searchQuery: party.searchQuery,
+            maxPrice: party.maxPrice,
+            preferences: party.aiStyle || '', // Map aiStyle to preferences
+            isActive: party.active, // Map active to isActive
+            lastSearched: party.lastRunAt || party.createdAt, // Map lastRunAt to lastSearched
+            foundResults: [], // Initialize empty array for foundResults
+            createdAt: party.createdAt
+        }));
+
+        res.json(transformedParties);
     } catch (error) {
         console.error('Get search parties error:', error);
         res.status(500).json({ error: 'Failed to retrieve search parties' });

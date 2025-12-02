@@ -1381,7 +1381,49 @@ const conversationSchema = new mongoose.Schema({
     messages: [{
         role: { type: String, enum: ['user', 'assistant'], required: true },
         content: { type: String, required: true },
-        timestamp: { type: Date, default: Date.now }
+        timestamp: { type: Date, default: Date.now },
+        // Additional fields for rich message content
+        type: { type: String }, // 'message', 'recommendation', 'search_parties_list', 'cart_command', 'cart_show'
+        deals: [{
+            title: String,
+            price: Number,
+            source: String,
+            link: String,
+            image: String,
+            rating: String,
+            reviews: String,
+            inCart: Boolean
+        }],
+        recommendation: {
+            deal: {
+                title: String,
+                price: Number,
+                source: String,
+                link: String,
+                image: String,
+                rating: String,
+                reviews: String,
+                inCart: Boolean
+            },
+            reason: String
+        },
+        searchQuery: { type: String },
+        searchParties: [{
+            id: String,
+            itemName: String,
+            maxPrice: Number,
+            preferences: String,
+            isActive: Boolean,
+            searchFrequency: Number,
+            lastSearched: String,
+            foundResults: Number,
+            createdAt: String
+        }],
+        command: {
+            action: String,
+            items: [String]
+        },
+        cart: { type: mongoose.Schema.Types.Mixed }
     }],
     createdAt: { type: Date, default: Date.now },
     updatedAt: { type: Date, default: Date.now }
@@ -2522,6 +2564,43 @@ app.post('/api/execute-search', async (req, res) => {
                 console.error('Error creating search party:', partyError);
                 // Don't fail the request if party creation fails
             }
+        }
+
+        // Update conversation with search results
+        try {
+            const conversation = await Conversation.findOne({ sessionId: session });
+            if (conversation && conversation.messages.length > 0) {
+                // Find the last assistant message and update it with search results
+                const lastAssistantIndex = conversation.messages.map((m, i) => ({ role: m.role, index: i }))
+                    .reverse()
+                    .find(m => m.role === 'assistant')?.index;
+
+                if (lastAssistantIndex !== undefined) {
+                    const messageUpdate = {
+                        type: deals && deals.length > 0 ? 'recommendation' : 'message',
+                        deals: deals || [],
+                        searchQuery: searchQuery
+                    };
+
+                    // Add recommendation if we have deals
+                    if (deals && deals.length > 0) {
+                        const bestDeal = [...deals].sort((a, b) => a.price - b.price)[0];
+                        messageUpdate.recommendation = {
+                            deal: bestDeal,
+                            reason: aiDealSummary || "Here are the best deals I found!"
+                        };
+                    }
+
+                    // Update the message
+                    Object.assign(conversation.messages[lastAssistantIndex], messageUpdate);
+                    conversation.updatedAt = new Date();
+                    await conversation.save();
+                    console.log(`💾 Updated conversation with search results: ${session}`);
+                }
+            }
+        } catch (dbError) {
+            console.error('Error updating conversation with search results:', dbError);
+            // Don't fail the request if database update fails
         }
 
         res.json({

@@ -1235,6 +1235,84 @@ app.get('/api/conversations/:sessionId', authenticateToken, async (req, res) => 
     }
 });
 
+// Create a shared link
+app.post('/api/share/create', async (req, res) => {
+    try {
+        const { type, data } = req.body;
+
+        if (!['conversation', 'product'].includes(type)) {
+            return res.status(400).json({ error: 'Invalid share type' });
+        }
+
+        // Generate a short random ID (8 chars)
+        const shareId = Math.random().toString(36).substring(2, 10);
+
+        // Get userId if authenticated (optional)
+        let userId = null;
+        const authHeader = req.headers['authorization'];
+        if (authHeader) {
+            const token = authHeader.split(' ')[1];
+            if (token) {
+                jwt.verify(token, process.env.JWT_SECRET, (err, user) => {
+                    if (!err) userId = user.userId;
+                });
+            }
+        }
+
+        const sharedLink = new SharedLink({
+            shareId,
+            type,
+            data,
+            userId
+        });
+
+        await sharedLink.save();
+
+        res.json({ shareId, url: `https://sonofanton.live/share/${shareId}` });
+    } catch (error) {
+        console.error('Create share link error:', error);
+        res.status(500).json({ error: 'Failed to create share link' });
+    }
+});
+
+// Get shared content
+app.get('/api/share/:shareId', async (req, res) => {
+    try {
+        const { shareId } = req.params;
+
+        const sharedLink = await SharedLink.findOne({ shareId });
+
+        if (!sharedLink) {
+            return res.status(404).json({ error: 'Shared content not found' });
+        }
+
+        // Increment views
+        sharedLink.views += 1;
+        await sharedLink.save();
+
+        let content = sharedLink.data;
+
+        // If it's a conversation, fetch the actual conversation data
+        if (sharedLink.type === 'conversation' && typeof sharedLink.data === 'string') {
+            const conversation = await Conversation.findOne({ sessionId: sharedLink.data });
+            if (conversation) {
+                content = conversation;
+            } else {
+                return res.status(404).json({ error: 'Original conversation not found' });
+            }
+        }
+
+        res.json({
+            type: sharedLink.type,
+            data: content,
+            createdAt: sharedLink.createdAt
+        });
+    } catch (error) {
+        console.error('Get shared content error:', error);
+        res.status(500).json({ error: 'Failed to retrieve shared content' });
+    }
+});
+
 
 // Generate a contextual session ID (simplified)
 function generateSessionId(req) {
@@ -1282,6 +1360,18 @@ const conversationSchema = new mongoose.Schema({
 });
 
 const Conversation = mongoose.model('Conversation', conversationSchema);
+
+// Shared Link Schema for sharing content
+const sharedLinkSchema = new mongoose.Schema({
+    shareId: { type: String, unique: true, required: true, index: true },
+    type: { type: String, enum: ['conversation', 'product'], required: true },
+    data: { type: mongoose.Schema.Types.Mixed, required: true }, // sessionId for conversation, product object for product
+    userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }, // Optional, if user is logged in
+    createdAt: { type: Date, default: Date.now },
+    views: { type: Number, default: 0 }
+});
+
+const SharedLink = mongoose.model('SharedLink', sharedLinkSchema);
 
 // Database cache configuration
 const DB_CACHE_TTL = 24 * 60 * 60 * 1000; // 24 hours

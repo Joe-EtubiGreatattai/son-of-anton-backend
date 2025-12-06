@@ -174,6 +174,7 @@ const userSchema = new mongoose.Schema({
         autoSearchOnOpen: { type: Boolean, default: true }
     },
     createdAt: { type: Date, default: Date.now },
+    role: { type: String, enum: ['user', 'vendor'], default: 'user' }
 });
 
 // Model
@@ -276,6 +277,23 @@ const exchangeRateSchema = new mongoose.Schema({
 });
 
 const ExchangeRate = mongoose.model('ExchangeRate', exchangeRateSchema);
+
+
+
+// Product Schema and Model (Vendor Uploaded)
+const productSchema = new mongoose.Schema({
+    vendorId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+    title: { type: String, required: true },
+    description: { type: String },
+    price: { type: Number, required: true },
+    category: { type: String },
+    image: { type: String }, // URL or base64
+    stock: { type: Number, default: 0 },
+    createdAt: { type: Date, default: Date.now }
+});
+
+productSchema.index({ title: 'text', description: 'text' });
+const Product = mongoose.model('Product', productSchema);
 
 // Middleware to authenticate and retrieve user from token
 const authenticateToken = (req, res, next) => {
@@ -523,6 +541,40 @@ async function searchKongaNigeria(searchQuery) {
     }
 }
 
+
+// Search Local Vendor Products
+async function searchLocalProducts(searchQuery) {
+    try {
+        console.log(`🏠 Searching Local Vendor Products for: "${searchQuery}"`);
+        // Basic text search using regex for now, or text index if configured
+        const products = await Product.find({
+            $or: [
+                { title: { $regex: searchQuery, $options: 'i' } },
+                { description: { $regex: searchQuery, $options: 'i' } }
+            ]
+        }).limit(20);
+
+        const mappedProducts = products.map(p => ({
+            title: p.title,
+            price: p.price,
+            source: 'Vendor', // Or specific vendor name if we populate it
+            link: `/product/${p._id}`, // Frontend route for details
+            thumbnail: p.image || null,
+            rating: 'N/A',
+            reviews: 'N/A',
+            isLocal: true,
+            id: p._id,
+            description: p.description
+        }));
+
+        console.log(`✅ Found ${mappedProducts.length} local products`);
+        return mappedProducts;
+    } catch (error) {
+        console.error('Error searching local products:', error.message);
+        return [];
+    }
+}
+
 // Unified search: Nigerian platforms (Jumia, Konga) + Amazon + Google Shopping
 async function searchAllSources(searchQuery, user = null) {
     // Default to Nigeria for all searches
@@ -532,7 +584,7 @@ async function searchAllSources(searchQuery, user = null) {
 
     // For Nigerian users, prioritize Nigerian platforms
     if (country === 'NG') {
-        const [jumiaProducts, kongaProducts, amazonProducts, serpResults] = await Promise.all([
+        const [jumiaProducts, kongaProducts, amazonProducts, localProducts, serpResults] = await Promise.all([
             searchJumiaNigeria(searchQuery).catch(err => {
                 console.error('Jumia search error:', err.message);
                 return [];
@@ -545,16 +597,25 @@ async function searchAllSources(searchQuery, user = null) {
                 console.error('Amazon search error:', err.message);
                 return [];
             }),
+            searchLocalProducts(searchQuery).catch(err => {
+                console.error('Local search error:', err.message);
+                return [];
+            }),
             searchItem(searchQuery, country).catch((err) => {
                 console.error('SerpAPI search error:', err.message || err);
                 return null;
             })
         ]);
 
-        console.log(`📊 Nigerian Search Results: Jumia=${jumiaProducts.length}, Konga=${kongaProducts.length}, Amazon=${amazonProducts.length}, Google Shopping=${serpResults?.shopping_results?.length || 0}`);
+        console.log(`📊 Nigerian Search Results: Jumia=${jumiaProducts.length}, Konga=${kongaProducts.length}, Amazon=${amazonProducts.length}, Local=${localProducts.length}, Google Shopping=${serpResults?.shopping_results?.length || 0}`);
 
         const nigerianResults = [];
         const foreignResults = [];
+
+        // Collect Local Results
+        for (const p of localProducts) {
+            nigerianResults.push({ ...p, isNigerian: true });
+        }
 
         // Collect Jumia Results (Nigerian)
         for (const p of jumiaProducts) {
@@ -710,7 +771,7 @@ app.get('/', (req, res) => {
 // Register Route
 app.post('/api/register', async (req, res) => {
     try {
-        const { username, email, password, preferences } = req.body;
+        const { username, email, password, preferences, role } = req.body;
 
         if (!email || !password) {
             return res.status(400).json({ error: 'Email and password are required' });
@@ -727,7 +788,8 @@ app.post('/api/register', async (req, res) => {
             username,
             email,
             password: hashedPassword,
-            preferences
+            preferences,
+            role: role || 'user'
         });
 
         const savedUser = await user.save();
@@ -741,7 +803,8 @@ app.post('/api/register', async (req, res) => {
                 username: savedUser.username,
                 email: savedUser.email,
                 preferences: savedUser.preferences,
-                searchPreferences: savedUser.searchPreferences
+                searchPreferences: savedUser.searchPreferences,
+                role: savedUser.role
             },
             token
         });
@@ -2777,5 +2840,81 @@ setInterval(async () => {
 
 console.log(`✅ Exchange rate cron job scheduled to run every ${EXCHANGE_RATE_UPDATE_HOURS} hours.`);
 
+
+// Vendor Product Routes
+
+// 1. Get Vendor's Products
+app.get('/api/vendor/products', authenticateToken, async (req, res) => {
+    try {
+        if (!req.userId) return res.status(401).json({ error: 'Unauthorized' });
+
+        // Verify user is a vendor
+        const user = await User.findById(req.userId);
+        if (!user || user.role !== 'vendor') {
+            return res.status(403).json({ error: 'Access denied. Vendor role required.' });
+        }
+
+        const products = await Product.find({ vendorId: req.userId }).sort({ createdAt: -1 });
+        res.json({ products });
+    } catch (error) {
+        console.error('Error fetching vendor products:', error);
+        res.status(500).json({ error: 'Failed to fetch products' });
+    }
+});
+
+// 2. Add New Product
+app.post('/api/vendor/products', authenticateToken, async (req, res) => {
+    try {
+        if (!req.userId) return res.status(401).json({ error: 'Unauthorized' });
+
+        const user = await User.findById(req.userId);
+        if (!user || user.role !== 'vendor') {
+            return res.status(403).json({ error: 'Access denied. Vendor role required.' });
+        }
+
+        const { title, description, price, category, image, stock } = req.body;
+
+        if (!title || !price) {
+            return res.status(400).json({ error: 'Title and price are required' });
+        }
+
+        const newProduct = new Product({
+            vendorId: req.userId,
+            title,
+            description,
+            price,
+            category,
+            image,
+            stock
+        });
+
+        await newProduct.save();
+        res.status(201).json({ message: 'Product added successfully', product: newProduct });
+    } catch (error) {
+        console.error('Error adding product:', error);
+        res.status(500).json({ error: 'Failed to add product' });
+    }
+});
+
+// 3. Delete Product
+app.delete('/api/vendor/products/:id', authenticateToken, async (req, res) => {
+    try {
+        if (!req.userId) return res.status(401).json({ error: 'Unauthorized' });
+
+        const product = await Product.findOne({ _id: req.params.id, vendorId: req.userId });
+
+        if (!product) {
+            return res.status(404).json({ error: 'Product not found or unauthorized' });
+        }
+
+        await Product.findByIdAndDelete(req.params.id);
+        res.json({ message: 'Product deleted successfully' });
+    } catch (error) {
+        console.error('Error deleting product:', error);
+        res.status(500).json({ error: 'Failed to delete product' });
+    }
+});
+
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+app.listen(PORT, '0.0.0.0', () => console.log(`Server running on port ${PORT}`));
+

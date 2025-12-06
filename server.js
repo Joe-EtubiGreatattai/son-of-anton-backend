@@ -1247,7 +1247,7 @@ app.post('/api/share/create', async (req, res) => {
 
         console.log('📤 Share link creation request:', { type, data: typeof data === 'string' ? data.substring(0, 50) : data });
 
-        if (!['conversation', 'product'].includes(type)) {
+        if (!['conversation', 'product', 'comparison_winner'].includes(type)) {
             return res.status(400).json({ error: 'Invalid share type' });
         }
 

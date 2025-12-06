@@ -14,8 +14,8 @@ const upload = multer({ storage: multer.memoryStorage() });
 
 const app = express();
 
-app.use(express.json());
 app.use(cors());
+app.use(express.json());
 
 // Load API keys and configuration from environment variables
 const SERP_API_KEY = process.env.SERP_API_KEY;
@@ -306,6 +306,7 @@ const authenticateToken = (req, res, next) => {
         req.userId = decoded.userId;
     } catch (err) {
         console.error('JWT verification failed:', err.message);
+        console.log('Using Secret:', JWT_SECRET ? 'Defined' : 'Undefined');
         req.userId = null;
     }
 
@@ -787,7 +788,9 @@ app.post('/api/register', async (req, res) => {
             role: role || 'user'
         });
 
+        console.log('💾 Attempting to save user to database...');
         const savedUser = await user.save();
+        console.log('✅ User saved successfully:', savedUser._id, savedUser.email, 'Role:', savedUser.role);
 
         const token = generateToken(savedUser);
 
@@ -2910,6 +2913,6 @@ app.delete('/api/vendor/products/:id', authenticateToken, async (req, res) => {
     }
 });
 
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => console.log(`Server running on port ${PORT}`));
 

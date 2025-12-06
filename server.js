@@ -771,6 +771,7 @@ app.get('/', (req, res) => {
 // Register Route
 app.post('/api/register', async (req, res) => {
     try {
+        console.log('➡️ Register request received:', req.body ? req.body.email : 'No body');
         const { username, email, password, preferences, role } = req.body;
 
         if (!email || !password) {

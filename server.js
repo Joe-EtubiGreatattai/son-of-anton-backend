@@ -6,6 +6,11 @@ const cors = require('cors');
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const multer = require('multer');
+const fs = require('fs');
+
+// Configure Multer for memory storage (direct upload to Gemini)
+const upload = multer({ storage: multer.memoryStorage() });
 
 const app = express();
 
@@ -2094,6 +2099,61 @@ TASK: Recommend the best option in 2-3 SHORT sentences.
         return 'I tried to analyze the deals, but there was an error generating a detailed recommendation. You can still review the top deals above.';
     }
 }
+
+// Transcribe audio using Gemini
+app.post('/api/transcribe', upload.single('audio'), async (req, res) => {
+    try {
+        if (!req.file) {
+            return res.status(400).json({ error: 'No audio file provided' });
+        }
+
+        console.log('🎤 Received audio file:', req.file.mimetype, req.file.size);
+
+        // Convert buffer to base64
+        const base64Audio = req.file.buffer.toString('base64');
+
+        const prompt = 'Transcribe this audio file verbatim. return JUST the text.';
+
+        // Call Gemini
+        const response = await axios.post(
+            `${GEMINI_URL}?key=${GOOGLE_API_KEY}`,
+            {
+                contents: [{
+                    parts: [
+                        {
+                            text: prompt
+                        },
+                        {
+                            inline_data: {
+                                mime_type: req.file.mimetype, // e.g. 'audio/webm' or 'audio/mp3'
+                                data: base64Audio
+                            }
+                        }
+                    ]
+                }]
+            },
+            {
+                headers: {
+                    'Content-Type': 'application/json'
+                }
+            }
+        );
+
+        const candidates = response.data?.candidates;
+        if (!candidates || candidates.length === 0) {
+            throw new Error('No transcription returned from Gemini');
+        }
+
+        const transcription = candidates[0]?.content?.parts?.[0]?.text || '';
+        console.log('📝 Transcription:', transcription);
+
+        res.json({ text: transcription.trim() });
+
+    } catch (error) {
+        console.error('Transcription error:', error.response?.data || error.message);
+        res.status(500).json({ error: 'Failed to transcribe audio' });
+    }
+});
 
 // AI-powered chat route
 app.post('/api/chat', async (req, res) => {

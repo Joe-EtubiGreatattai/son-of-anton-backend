@@ -2155,6 +2155,82 @@ app.post('/api/transcribe', upload.single('audio'), async (req, res) => {
     }
 });
 
+// Compare products using Gemini
+app.post('/api/compare', async (req, res) => {
+    try {
+        const { products } = req.body;
+
+        if (!products || !Array.isArray(products) || products.length < 2) {
+            return res.status(400).json({ error: 'Please select at least 2 products to compare.' });
+        }
+
+        console.log(`⚖️ Comparing ${products.length} products`);
+
+        const productsDescription = products.map((p, i) =>
+            `Product ${i}: ${p.title}
+             Price: ${p.price}
+             Source: ${p.source}
+             Rating: ${p.rating} (${p.reviews} reviews)
+             Link: ${p.link}`
+        ).join('\n\n');
+
+        const prompt = `Compare the following products and identify the best option for the user.
+        
+        ${productsDescription}
+        
+        You must strictly return valid JSON in the following format (no markdown code blocks, just raw JSON).
+        IMPORTANT: In the 'summary', 'keyDifferences', and 'verdict', NEVER refer to products as "Product 0" or "Product 1". ALWAYS use their actual truncated titles (e.g., "AirPods Pro").
+
+        {
+          "winnerIndex": 0, // Index of the winning product in the provided list (0-based)
+          "runnerUpIndex": 1, // Index of the runner-up product (optional, null if none)
+          "summary": "Values-based summary of why the winner was chosen. Use actual product names, not indices. (max 2 sentences).",
+          "keyDifferences": [
+            { "feature": "Price", "value1": "₦450,000", "value2": "₦480,000", "note": "AirPods Pro is cheaper" },
+            { "feature": "Rating", "value1": "4.5", "value2": "4.0", "note": "Sony XM5 has higher rating" }
+          ],
+          "verdict": "Final short verdict (e.g. 'Best Value', 'Premium Choice')"
+        }`;
+
+        // Call Gemini
+        const response = await axios.post(
+            `${GEMINI_URL}?key=${GOOGLE_API_KEY}`,
+            {
+                contents: [{
+                    parts: [{ text: prompt }]
+                }]
+            },
+            {
+                headers: { 'Content-Type': 'application/json' }
+            }
+        );
+
+        const candidates = response.data?.candidates;
+        let comparisonText = candidates?.[0]?.content?.parts?.[0]?.text || '{}';
+
+        // Clean up markdown code blocks if present
+        comparisonText = comparisonText.replace(/```json\n?|\n?```/g, "").trim();
+
+        let comparisonData;
+        try {
+            comparisonData = JSON.parse(comparisonText);
+        } catch (e) {
+            console.error("Failed to parse Gemini JSON:", comparisonText);
+            // Fallback to text if JSON fails
+            return res.json({
+                error: true,
+                rawText: comparisonText
+            });
+        }
+
+        res.json({ comparison: comparisonData });
+
+    } catch (error) {
+        console.error('Comparison error:', error.response?.data || error.message);
+        res.status(500).json({ error: 'Failed to compare products' });
+    }
+});
+
 // AI-powered chat route
 app.post('/api/chat', async (req, res) => {
     try {

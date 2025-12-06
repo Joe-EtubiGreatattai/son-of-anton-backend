@@ -14,14 +14,8 @@ const upload = multer({ storage: multer.memoryStorage() });
 
 const app = express();
 
-const corsOptions = {
-    origin: true, // Accept all origins
-    credentials: true,
-    optionsSuccessStatus: 200
-};
-
 app.use(express.json());
-app.use(cors(corsOptions));
+app.use(cors());
 
 // Load API keys and configuration from environment variables
 const SERP_API_KEY = process.env.SERP_API_KEY;

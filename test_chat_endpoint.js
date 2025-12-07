@@ -1,6 +1,6 @@
 const axios = require('axios');
 
-const API_URL = 'http://192.168.0.130:3000/api/chat';
+const API_URL = 'http://localhost:3000/api/chat';
 
 async function testChatEndpoint() {
     console.log('Testing /api/chat endpoint...\n');

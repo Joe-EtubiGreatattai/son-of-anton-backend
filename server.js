@@ -142,9 +142,13 @@ mongoose.connect(MONGO_URI, {
     .catch((err) => console.error('MongoDB connection error:', err));
 
 // User Schema and Model
+const { ClerkExpressWithAuth } = require('@clerk/clerk-sdk-node');
+
+// User Schema and Model
 const userSchema = new mongoose.Schema({
     username: { type: String },
     email: { type: String, required: true, unique: true },
+    clerkId: { type: String, unique: true, sparse: true }, // Added for Clerk integration
     password: { type: String },
     preferences: {
         budget: { type: Number, default: null },
@@ -272,8 +276,6 @@ const exchangeRateSchema = new mongoose.Schema({
 
 const ExchangeRate = mongoose.model('ExchangeRate', exchangeRateSchema);
 
-
-
 // Product Schema and Model (Vendor Uploaded)
 const productSchema = new mongoose.Schema({
     vendorId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
@@ -290,27 +292,58 @@ productSchema.index({ title: 'text', description: 'text' });
 const Product = mongoose.model('Product', productSchema);
 
 // Middleware to authenticate and retrieve user from token
-const authenticateToken = (req, res, next) => {
-    const authHeader = req.headers.authorization;
+// Updated to support Clerk authentication
+const authenticateToken = async (req, res, next) => {
+    // 1. Try Clerk Authentication first
+    ClerkExpressWithAuth({ loose: true })(req, res, async (err) => {
+        if (err) {
+            console.error('Clerk auth error:', err);
+            return next(); // Continue, potentially as unauthenticated or try legacy
+        }
 
-    // Allow unauthenticated access but attach userId if token is valid
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-        req.userId = null; // no userId for unauthenticated requests
-        return next();
-    }
+        if (req.auth && req.auth.userId) {
+            console.log('✅ Clerk Verified User:', req.auth.userId);
 
-    const token = authHeader.split(' ')[1];
+            // Try to find the user in our DB by clerkId
+            let user = await User.findOne({ clerkId: req.auth.userId });
 
-    try {
-        const decoded = jwt.verify(token, JWT_SECRET);
-        req.userId = decoded.userId;
-    } catch (err) {
-        console.error('JWT verification failed:', err.message);
-        console.log('Using Secret:', JWT_SECRET ? 'Defined' : 'Undefined');
-        req.userId = null;
-    }
+            if (user) {
+                req.userId = user._id;
+                req.user = user;
+                return next();
+            } else {
+                console.log('⚠️ Clerk User verified but not found in MongoDB via clerkId.');
+                // Optional: You could look up by email match here if you had the email claim
+                // For now, we allow the request to proceed, but req.userId is null (or we could set req.clerkId)
+                // This means protected routes depending on req.userId might fail, which is expected until sync.
+            }
+        }
 
-    next();
+        // 2. Fallback to Legacy JWT Authentication (for existing users/tokens)
+        const authHeader = req.headers.authorization;
+        if (authHeader && authHeader.startsWith('Bearer ')) {
+            const token = authHeader.split(' ')[1];
+            try {
+                // If it's a short legacy token, this might work. 
+                // Clerk tokens are also JWTs, so verify() might fail with "invalid signature" if using LOCAL secret vs Clerk Key.
+                const decoded = jwt.verify(token, JWT_SECRET);
+                req.userId = decoded.userId;
+                console.log('✅ Legacy JWT Verified User:', req.userId);
+            } catch (err) {
+                // Quietly fail legacy check if it was intended for Clerk
+                if (!req.auth?.userId) {
+                    console.log('Legacy JWT verification failed (and no Clerk session).');
+                }
+                req.userId = null;
+            }
+        } else {
+            if (!req.auth?.userId) {
+                req.userId = null;
+            }
+        }
+
+        next();
+    });
 };
 
 app.use(authenticateToken);

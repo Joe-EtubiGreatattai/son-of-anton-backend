@@ -291,9 +291,110 @@ const productSchema = new mongoose.Schema({
 productSchema.index({ title: 'text', description: 'text' });
 const Product = mongoose.model('Product', productSchema);
 
+// --- LEGACY AUTH ENDPOINTS (Restored) ---
+
+// Register Endpoint
+app.post('/api/auth/register', async (req, res) => {
+    try {
+        const { email, password, username, preferences } = req.body;
+
+        // Check if user exists
+        let user = await User.findOne({ email });
+        if (user) {
+            return res.status(400).json({ error: 'User already exists' });
+        }
+
+        // Hash password
+        const salt = await bcrypt.genSalt(10);
+        const hashedPassword = await bcrypt.hash(password, salt);
+
+        // Create new user
+        user = new User({
+            username: username || email.split('@')[0],
+            email,
+            password: hashedPassword,
+            preferences: preferences || {}
+        });
+
+        await user.save();
+
+        // Create JWT token
+        const token = jwt.sign(
+            { userId: user._id, email: user.email },
+            JWT_SECRET,
+            { expiresIn: '30d' }
+        );
+
+        res.status(201).json({
+            token,
+            user: {
+                id: user._id,
+                username: user.username,
+                email: user.email,
+                preferences: user.preferences
+            }
+        });
+    } catch (error) {
+        console.error('Registration error:', error);
+        res.status(500).json({ error: 'Server error during registration' });
+    }
+});
+
+// Login Endpoint
+app.post('/api/auth/login', async (req, res) => {
+    try {
+        const { email, password } = req.body;
+
+        // Check if user exists
+        const user = await User.findOne({ email });
+        if (!user) {
+            return res.status(400).json({ error: 'Invalid credentials' });
+        }
+
+        // Check password (only if user has a password set - i.e. not just a Clerk user)
+        if (!user.password) {
+            return res.status(400).json({ error: 'Please login using your social account (Clerk)' });
+        }
+
+        const isMatch = await bcrypt.compare(password, user.password);
+        if (!isMatch) {
+            return res.status(400).json({ error: 'Invalid credentials' });
+        }
+
+        // Create JWT token
+        const token = jwt.sign(
+            { userId: user._id, email: user.email },
+            JWT_SECRET,
+            { expiresIn: '30d' }
+        );
+
+        res.json({
+            token,
+            user: {
+                id: user._id,
+                username: user.username,
+                email: user.email,
+                preferences: user.preferences,
+                role: user.role
+            }
+        });
+    } catch (error) {
+        console.error('Login error:', error);
+        res.status(500).json({ error: 'Server error during login' });
+    }
+});
+
+// ----------------------------------------
+
+
 // Middleware to authenticate and retrieve user from token
 // Updated to support Clerk authentication
 const authenticateToken = async (req, res, next) => {
+    // Exclude auth routes from token verification
+    if (req.path.startsWith('/api/auth')) {
+        return next();
+    }
+
     // 1. Try Clerk Authentication first
     ClerkExpressWithAuth({ loose: true })(req, res, async (err) => {
         if (err) {

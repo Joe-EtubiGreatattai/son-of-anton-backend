@@ -584,6 +584,51 @@ async function searchAmazonProducts(searchQuery) {
     });
 }
 
+// Search eBay
+async function searchEbay(searchQuery) {
+    try {
+        console.log(`🛒 Searching eBay for: "${searchQuery}"`);
+        const params = {
+            q: searchQuery,
+            api_key: SERP_API_KEY,
+            engine: 'ebay',
+            ebay_domain: 'ebay.com',
+            _nkw: searchQuery
+        };
+
+        const response = await axios.get(SERP_BASE_URL, { params });
+        const results = response.data.organic_results || [];
+
+        const ebayProducts = results
+            .map(item => {
+                // Parse price
+                let price = null;
+                if (item.price) {
+                    const priceStr = typeof item.price === 'object' ? item.price.raw : item.price;
+                    const priceMatch = priceStr?.toString().match(/[\d,.]+/);
+                    price = priceMatch ? parseFloat(priceMatch[0].replace(/,/g, '')) : null;
+                }
+
+                return {
+                    title: item.title || 'Unknown Product',
+                    price: price,
+                    source: 'eBay',
+                    link: item.link || '#',
+                    thumbnail: item.thumbnail || null,
+                    rating: item.rating || 'N/A',
+                    reviews: item.reviews_count || 'N/A'
+                };
+            })
+            .filter(p => p.price !== null);
+
+        console.log(`✅ Found ${ebayProducts.length} products on eBay`);
+        return ebayProducts;
+    } catch (error) {
+        console.error('Error searching eBay:', error.message);
+        return [];
+    }
+}
+
 // Search Jumia Nigeria
 async function searchJumiaNigeria(searchQuery) {
     try {
@@ -711,9 +756,9 @@ async function searchAllSources(searchQuery, user = null) {
 
     console.log(`🌍 Searching with country preference: ${country}`);
 
-    // For Nigerian users, prioritize Nigerian platforms
+    // For Nigerian users, prioritize Nigerian platforms but include international options
     if (country === 'NG') {
-        const [jumiaProducts, kongaProducts, amazonProducts, localProducts, serpResults] = await Promise.all([
+        const [jumiaProducts, kongaProducts, amazonProducts, ebayProducts, localProducts, serpResults] = await Promise.all([
             searchJumiaNigeria(searchQuery).catch(err => {
                 console.error('Jumia search error:', err.message);
                 return [];
@@ -726,6 +771,10 @@ async function searchAllSources(searchQuery, user = null) {
                 console.error('Amazon search error:', err.message);
                 return [];
             }),
+            searchEbay(searchQuery).catch(err => {
+                console.error('eBay search error:', err.message);
+                return [];
+            }),
             searchLocalProducts(searchQuery).catch(err => {
                 console.error('Local search error:', err.message);
                 return [];
@@ -736,7 +785,7 @@ async function searchAllSources(searchQuery, user = null) {
             })
         ]);
 
-        console.log(`📊 Nigerian Search Results: Jumia=${jumiaProducts.length}, Konga=${kongaProducts.length}, Amazon=${amazonProducts.length}, Local=${localProducts.length}, Google Shopping=${serpResults?.shopping_results?.length || 0}`);
+        console.log(`📊 Nigerian Search Results: Jumia=${jumiaProducts.length}, Konga=${kongaProducts.length}, Amazon=${amazonProducts.length}, eBay=${ebayProducts.length}, Local=${localProducts.length}, Google Shopping=${serpResults?.shopping_results?.length || 0}`);
 
         const nigerianResults = [];
         const foreignResults = [];
@@ -783,11 +832,7 @@ async function searchAllSources(searchQuery, user = null) {
                     continue;
                 }
 
-                // Check if it's a Nigerian source (basic check + currency check if available)
-                // For now, we assume Google Shopping NG returns mostly NG results, but let's be safe
-                // If the currency is NGN, it's definitely Nigerian.
-                // Since we don't have currency field easily here without parsing, we'll assume based on the search context 'NG'
-                // But let's treat them as Nigerian for now as they come from the NG gl parameter.
+                // Treat Google Shopping NG results as Nigerian
                 nigerianResults.push({
                     ...item,
                     isNigerian: true
@@ -795,33 +840,62 @@ async function searchAllSources(searchQuery, user = null) {
             }
         }
 
-        // Collect Amazon Results (Foreign)
+        // Collect Amazon Results (Foreign) - Convert USD to NGN
         for (const p of amazonProducts) {
+            const convertedPrice = await convertToNGN(p.price, 'USD');
             foreignResults.push({
-                price: p.price,
+                price: convertedPrice,
                 thumbnail: p.thumbnail,
                 link: p.link,
                 source: p.source,
                 title: p.title,
                 rating: p.rating,
                 reviews: p.reviews,
-                isNigerian: false
+                isNigerian: false,
+                originalPrice: p.price,
+                originalCurrency: 'USD'
             });
         }
 
-        // Blend Results: Favour Nigerian (2:1 ratio)
+        // Collect eBay Results (Foreign) - Convert USD to NGN
+        for (const p of ebayProducts) {
+            const convertedPrice = await convertToNGN(p.price, 'USD');
+            foreignResults.push({
+                price: convertedPrice,
+                thumbnail: p.thumbnail,
+                link: p.link,
+                source: p.source,
+                title: p.title,
+                rating: p.rating,
+                reviews: p.reviews,
+                isNigerian: false,
+                originalPrice: p.price,
+                originalCurrency: 'USD'
+            });
+        }
+
+        // Improved Blending: ~65% Nigerian, ~35% International
+        // Pattern: NG, NG, Foreign, NG, Foreign (repeating)
         const blendedResults = [];
         let ngIndex = 0;
         let foreignIndex = 0;
 
         while (ngIndex < nigerianResults.length || foreignIndex < foreignResults.length) {
-            // Add up to 2 Nigerian items
+            // Add 2 Nigerian items
             for (let i = 0; i < 2; i++) {
                 if (ngIndex < nigerianResults.length) {
                     blendedResults.push(nigerianResults[ngIndex++]);
                 }
             }
-            // Add 1 Foreign item
+            // Add 1 International item
+            if (foreignIndex < foreignResults.length) {
+                blendedResults.push(foreignResults[foreignIndex++]);
+            }
+            // Add 1 more Nigerian item
+            if (ngIndex < nigerianResults.length) {
+                blendedResults.push(nigerianResults[ngIndex++]);
+            }
+            // Add 1 more International item
             if (foreignIndex < foreignResults.length) {
                 blendedResults.push(foreignResults[foreignIndex++]);
             }
@@ -1819,18 +1893,25 @@ Remember: Only use "SEARCH: <query>" if the user is actually looking for a produ
 }
 
 // Call Google Gemini API
-async function callGeminiAPI(prompt) {
+async function callGeminiAPI(prompt, imageBuffer = null, mimeType = null) {
     try {
+        const parts = [{ text: prompt }];
+
+        if (imageBuffer && mimeType) {
+            parts.push({
+                inlineData: {
+                    mimeType: mimeType,
+                    data: imageBuffer.toString('base64')
+                }
+            });
+        }
+
         const response = await axios.post(
             `${GEMINI_URL}?key=${GOOGLE_API_KEY}`,
             {
                 contents: [
                     {
-                        parts: [
-                            {
-                                text: prompt,
-                            },
-                        ],
+                        parts: parts,
                     },
                 ],
             },
@@ -2423,6 +2504,118 @@ app.post('/api/compare', async (req, res) => {
     } catch (error) {
         console.error('Comparison error:', error.response?.data || error.message);
         res.status(500).json({ error: 'Failed to compare products' });
+    }
+});
+
+// Vision Chat Route
+app.post('/api/chat/vision', upload.single('image'), authenticateToken, async (req, res) => {
+    try {
+        if (!req.file) {
+            return res.status(400).json({ error: 'No image uploaded' });
+        }
+
+        const { sessionId: clientSessionId } = req.body;
+        const sessionId = clientSessionId || Date.now().toString();
+        const userId = req.userId;
+
+        console.log('📸 Processing vision request for session:', sessionId);
+
+        // 1. Analyze Image with Gemini
+        const prompt = `Identify this product from the image. providing the product name, brand, model, and key visual features.
+        Then, generate a specific search query to find this exact product and its variations.
+        Return the result as a strict JSON object with these fields:
+        {
+            "productName": "Name of the product",
+            "searchQuery": "Best search query for Amazon/Shopping",
+            "variations": "Description of potential variations (color, size, etc.)",
+            "description": "Brief description of the item"
+        }
+        Do not include markdown formatting (like \`\`\`json). Just the raw JSON string.`;
+
+        const analysisResponse = await callGeminiAPI(prompt, req.file.buffer, req.file.mimetype);
+
+        let analysis;
+        try {
+            // Clean markdown code blocks if present
+            const cleanJson = analysisResponse.replace(/```json/g, '').replace(/```/g, '').trim();
+            analysis = JSON.parse(cleanJson);
+        } catch (e) {
+            console.warn('Failed to parse Gemini vision JSON, falling back to raw text', e);
+            analysis = {
+                productName: 'Unknown Product',
+                searchQuery: analysisResponse.split('\n')[0], // Guess first line is relevant
+                description: analysisResponse
+            };
+        }
+
+        console.log('🔍 Generated Search Query from Image:', analysis.searchQuery);
+
+        // 2. Perform Search using the unified search function
+        const searchResults = await searchAllSources(analysis.searchQuery, null);
+        const allResults = searchResults.shopping_results || [];
+
+        // 3. Generate AI Response about the results
+        const resultCount = allResults.length;
+        const summaryPrompt = `User uploaded an image of: ${analysis.productName}.
+        Description: ${analysis.description}.
+        We found ${resultCount} products using query: "${analysis.searchQuery}".
+        
+        Write a short, helpful message to the user confirming what you saw in the image and mentioning the results found. 
+        Mention if you accessed "variations" if relevant.
+        Keep it to 2-3 sentences. Friendly tone.`;
+
+        const aiMessage = await callGeminiAPI(summaryPrompt);
+
+        // 4. Save to Database (Create a "User Message" that represents the image upload)
+        // We'll rely on the frontend to display the uploaded image, handling the "User" side of the UI.
+        // We just return the "AI" response.
+
+        if (clientSessionId) {
+            try {
+                // Find or create conversation
+                let conversation = await Conversation.findOne({ sessionId });
+                if (!conversation) {
+                    conversation = new Conversation({
+                        userId: userId || null,
+                        sessionId: sessionId,
+                        messages: []
+                    });
+                }
+
+                // Add Image Message (User)
+                conversation.messages.push({
+                    role: 'user',
+                    content: `[Uploaded Image] ${analysis.productName}`,
+                    type: 'image',
+                    image: req.file.originalname // Or save to cloud and store URL if needed
+                });
+
+                // Add AI Response
+                conversation.messages.push({
+                    role: 'assistant',
+                    content: aiMessage,
+                    type: 'product_search',
+                    deals: allResults,
+                    searchQuery: analysis.searchQuery
+                });
+
+                await conversation.save();
+            } catch (dbError) {
+                console.error('Error saving vision conversation:', dbError);
+            }
+        }
+
+        res.json({
+            message: aiMessage,
+            results: allResults,
+            searchQuery: analysis.searchQuery,
+            productDetails: analysis,
+            type: 'product_search'
+        });
+
+    } catch (error) {
+        console.error('Vision API Error:', error);
+        res.status(500).json({ error: 'Failed to process image' });
     }
 });
 

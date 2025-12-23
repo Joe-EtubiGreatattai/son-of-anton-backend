@@ -750,205 +750,121 @@ async function searchLocalProducts(searchQuery) {
 }
 
 // Unified search: Nigerian platforms (Jumia, Konga) + Amazon + Google Shopping
+// Unified search: Nigerian platforms (Jumia, Konga) + Amazon + Google Shopping
 async function searchAllSources(searchQuery, user = null) {
     // Default to Nigeria for all searches
     const country = user?.preferences?.country || 'NG';
 
     console.log(`🌍 Searching with country preference: ${country}`);
 
-    // For Nigerian users, prioritize Nigerian platforms but include international options
-    if (country === 'NG') {
-        const [jumiaProducts, kongaProducts, amazonProducts, ebayProducts, localProducts, serpResults] = await Promise.all([
-            searchJumiaNigeria(searchQuery).catch(err => {
-                console.error('Jumia search error:', err.message);
-                return [];
-            }),
-            searchKongaNigeria(searchQuery).catch(err => {
-                console.error('Konga search error:', err.message);
-                return [];
-            }),
-            searchAmazonProducts(searchQuery).catch(err => {
-                console.error('Amazon search error:', err.message);
-                return [];
-            }),
-            searchEbay(searchQuery).catch(err => {
-                console.error('eBay search error:', err.message);
-                return [];
-            }),
-            searchLocalProducts(searchQuery).catch(err => {
-                console.error('Local search error:', err.message);
-                return [];
-            }),
-            searchItem(searchQuery, country).catch((err) => {
-                console.error('SerpAPI search error:', err.message || err);
-                return null;
-            })
-        ]);
-
-        console.log(`📊 Nigerian Search Results: Jumia=${jumiaProducts.length}, Konga=${kongaProducts.length}, Amazon=${amazonProducts.length}, eBay=${ebayProducts.length}, Local=${localProducts.length}, Google Shopping=${serpResults?.shopping_results?.length || 0}`);
-
-        const nigerianResults = [];
-        const foreignResults = [];
-
-        // Collect Local Results
-        for (const p of localProducts) {
-            nigerianResults.push({ ...p, isNigerian: true });
-        }
-
-        // Collect Jumia Results (Nigerian)
-        for (const p of jumiaProducts) {
-            nigerianResults.push({
-                price: p.price,
-                thumbnail: p.thumbnail,
-                link: p.link,
-                source: p.source,
-                title: p.title,
-                rating: p.rating,
-                reviews: p.reviews,
-                isNigerian: true
-            });
-        }
-
-        // Collect Konga Results (Nigerian)
-        for (const p of kongaProducts) {
-            nigerianResults.push({
-                price: p.price,
-                thumbnail: p.thumbnail,
-                link: p.link,
-                source: p.source,
-                title: p.title,
-                rating: p.rating,
-                reviews: p.reviews,
-                isNigerian: true
-            });
-        }
-
-        // Collect Google Shopping Results (Check for Nigerian vs Foreign)
-        if (serpResults && serpResults.shopping_results) {
-            for (const item of serpResults.shopping_results) {
-                const source = item.source || item.merchant || item.store || '';
-                // Skip if already added from Jumia/Konga
-                if (source && (source.toLowerCase().includes('jumia') || source.toLowerCase().includes('konga'))) {
-                    continue;
-                }
-
-                // Treat Google Shopping NG results as Nigerian
-                nigerianResults.push({
-                    ...item,
-                    isNigerian: true
-                });
-            }
-        }
-
-        // Collect Amazon Results (Foreign) - Convert USD to NGN
-        for (const p of amazonProducts) {
-            const convertedPrice = await convertToNGN(p.price, 'USD');
-            foreignResults.push({
-                price: convertedPrice,
-                thumbnail: p.thumbnail,
-                link: p.link,
-                source: p.source,
-                title: p.title,
-                rating: p.rating,
-                reviews: p.reviews,
-                isNigerian: false,
-                originalPrice: p.price,
-                originalCurrency: 'USD'
-            });
-        }
-
-        // Collect eBay Results (Foreign) - Convert USD to NGN
-        for (const p of ebayProducts) {
-            const convertedPrice = await convertToNGN(p.price, 'USD');
-            foreignResults.push({
-                price: convertedPrice,
-                thumbnail: p.thumbnail,
-                link: p.link,
-                source: p.source,
-                title: p.title,
-                rating: p.rating,
-                reviews: p.reviews,
-                isNigerian: false,
-                originalPrice: p.price,
-                originalCurrency: 'USD'
-            });
-        }
-
-        // Improved Blending: ~65% Nigerian, ~35% International
-        // Pattern: NG, NG, Foreign, NG, Foreign (repeating)
-        const blendedResults = [];
-        let ngIndex = 0;
-        let foreignIndex = 0;
-
-        while (ngIndex < nigerianResults.length || foreignIndex < foreignResults.length) {
-            // Add 2 Nigerian items
-            for (let i = 0; i < 2; i++) {
-                if (ngIndex < nigerianResults.length) {
-                    blendedResults.push(nigerianResults[ngIndex++]);
-                }
-            }
-            // Add 1 International item
-            if (foreignIndex < foreignResults.length) {
-                blendedResults.push(foreignResults[foreignIndex++]);
-            }
-            // Add 1 more Nigerian item
-            if (ngIndex < nigerianResults.length) {
-                blendedResults.push(nigerianResults[ngIndex++]);
-            }
-            // Add 1 more International item
-            if (foreignIndex < foreignResults.length) {
-                blendedResults.push(foreignResults[foreignIndex++]);
-            }
-        }
-
-        return { shopping_results: blendedResults };
-    }
-
-    // For non-Nigerian users, use original logic
-    const [amazonProducts, serpResults] = await Promise.all([
-        searchAmazonProducts(searchQuery),
-        searchItem(searchQuery, country).catch((err) => {
-            console.error('SerpAPI search error:', err.message || err);
-            return null;
+    // Call Local Search and New External Search API in parallel
+    const [localProducts, apiData] = await Promise.all([
+        searchLocalProducts(searchQuery).catch(err => {
+            console.error('Local search error:', err.message);
+            return [];
+        }),
+        axios.get(`https://search-api-backend.onrender.com/api/search`, {
+            params: { q: searchQuery }
+        }).then(res => res.data).catch(err => {
+            console.error('External Search API error:', err.message);
+            return { results: [] };
         })
     ]);
 
-    console.log(`📊 Search results debug: Amazon=${amazonProducts.length} items, SerpAPI=${serpResults ? 'success' : 'failed'}`);
-    if (serpResults && serpResults.shopping_results) {
-        console.log(`📊 SerpAPI found ${serpResults.shopping_results.length} shopping results`);
-    } else if (serpResults) {
-        console.log('📊 SerpAPI returned data but no shopping_results:', Object.keys(serpResults));
+    const apiResults = apiData?.results || [];
+    console.log(`📊 External API returned ${apiResults.length} results`);
+
+    const nigerianResults = [];
+    const foreignResults = [];
+
+    // Process Local Results
+    for (const p of localProducts) {
+        nigerianResults.push({ ...p, isNigerian: true });
     }
 
-    const shoppingResults = [];
+    // Helper to parse price string
+    const parsePrice = (str) => {
+        if (typeof str === 'number') return { val: str, cur: 'USD' };
+        if (!str) return { val: 0, cur: 'USD' };
 
-    // Add Amazon products from Amazon PA-API as primary source
-    for (const p of amazonProducts) {
-        shoppingResults.push({
-            price: p.price,
-            thumbnail: p.thumbnail,
-            link: p.link,
-            source: p.source,
-            title: p.title,
-            rating: p.rating,
-            reviews: p.reviews
-        });
-    }
+        let cur = 'USD';
+        if (str.includes('EUR') || str.includes('€')) cur = 'EUR';
+        if (str.includes('NGN') || str.includes('₦')) cur = 'NGN';
+        if (str.includes('GBP') || str.includes('£')) cur = 'GBP';
 
-    // Add non-Amazon products from SerpAPI as secondary
-    if (serpResults && serpResults.shopping_results) {
-        for (const item of serpResults.shopping_results) {
-            const source = item.source || item.merchant || item.store || '';
-            if (source && source.toLowerCase().includes('amazon')) {
-                // Skip any Amazon items from Google – we only want direct Amazon API data
-                continue;
-            }
-            shoppingResults.push(item);
+        // Remove currency symbols and non-numeric characters (except dot)
+        const numStr = str.replace(/[^0-9.]/g, '');
+        const val = parseFloat(numStr) || 0;
+
+        return { val, cur };
+    };
+
+    // Process API Results
+    for (const item of apiResults) {
+        const { val, cur } = parsePrice(item.price);
+        let finalPrice = val;
+
+        // Convert foreign currency to NGN for Nigerian users
+        if (country === 'NG' && cur !== 'NGN' && convertToNGN) {
+            finalPrice = await convertToNGN(val, cur);
+        }
+
+        // Determine if Nigerian source
+        const isNigerianSource = ['Jumia', 'Jiji', 'Konga'].some(s => item.source && item.source.includes(s));
+
+        const mappedItem = {
+            price: finalPrice,
+            thumbnail: item.img,
+            link: item.link,
+            source: item.source,
+            title: item.title,
+            rating: item.rating,
+            reviews: 'N/A',
+            isNigerian: isNigerianSource,
+            originalPrice: val,
+            originalCurrency: cur
+        };
+
+        if (isNigerianSource) {
+            nigerianResults.push({ ...mappedItem, isNigerian: true });
+        } else {
+            foreignResults.push(mappedItem);
         }
     }
 
-    // We return an object that matches what findBestDeals expects
-    return { shopping_results: shoppingResults };
+    // For non-Nigerian users, return all results combined
+    if (country !== 'NG') {
+        return { shopping_results: [...foreignResults, ...nigerianResults] };
+    }
+
+    // Blending Logic: ~65% Nigerian, ~35% International
+    // Pattern: NG, NG, Foreign, NG, Foreign (repeating)
+    const blendedResults = [];
+    let ngIndex = 0;
+    let foreignIndex = 0;
+
+    while (ngIndex < nigerianResults.length || foreignIndex < foreignResults.length) {
+        // Add 2 Nigerian items
+        for (let i = 0; i < 2; i++) {
+            if (ngIndex < nigerianResults.length) {
+                blendedResults.push(nigerianResults[ngIndex++]);
+            }
+        }
+        // Add 1 International item
+        if (foreignIndex < foreignResults.length) {
+            blendedResults.push(foreignResults[foreignIndex++]);
+        }
+        // Add 1 more Nigerian item
+        if (ngIndex < nigerianResults.length) {
+            blendedResults.push(nigerianResults[ngIndex++]);
+        }
+        // Add 1 more International item
+        if (foreignIndex < foreignResults.length) {
+            blendedResults.push(foreignResults[foreignIndex++]);
+        }
+    }
+
+    return { shopping_results: blendedResults };
 }
 
 // Helper function to generate JWT token

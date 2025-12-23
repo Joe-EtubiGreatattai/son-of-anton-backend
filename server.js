@@ -33,7 +33,8 @@ const GEMINI_URL = `https://generativelanguage.googleapis.com/v1/${GEMINI_MODEL}
 
 
 // MongoDB connection
-const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/chat_app';
+// MongoDB connection
+const MONGO_URI = process.env.MONGO_URI || process.env.MONGODB_URI || 'mongodb://localhost:27017/chat_app';
 
 // Search frequency configuration
 const SEARCH_FREQUENCY_HOURS = parseInt(process.env.SEARCH_FREQUENCY_HOURS, 10) || null;

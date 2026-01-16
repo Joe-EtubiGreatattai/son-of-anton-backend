@@ -48,8 +48,24 @@ const SEARCH_FREQUENCY_MINUTES = parseInt(process.env.SEARCH_FREQUENCY_MINUTES, 
 const EXCHANGE_RATE_UPDATE_HOURS = parseInt(process.env.EXCHANGE_RATE_UPDATE_HOURS, 10) || 6;
 
 
-// Affiliate configuration - REMOVED
-// const AFFILIATE_CONFIGS = { ... };
+// Affiliate configuration
+const AFFILIATE_CONFIGS = {
+    amazon: {
+        enabled: true,
+        tag: 'sagato-20',
+        domains: ['amazon.com', 'amzn.to']
+    },
+    ebay: {
+        enabled: false,
+        campaignId: '',
+        domains: ['ebay.com']
+    },
+    walmart: {
+        enabled: false,
+        publisherId: '',
+        domains: ['walmart.com']
+    }
+};
 
 // Amazon Product Advertising API (PA-API) setup - REMOVED
 
@@ -98,7 +114,13 @@ validateSearchFrequency();
 
 // Connect to MongoDB
 mongoose.connect(MONGO_URI)
-    .then(() => console.log('MongoDB connected'))
+    .then(() => {
+        console.log('MongoDB connected');
+        // Initialize Exchange Rates
+        fetchAndStoreExchangeRates();
+        // Start Scheduler
+        startScheduler();
+    })
     .catch((err) => console.error('MongoDB connection error:', err));
 
 // User Schema and Model
@@ -108,6 +130,7 @@ const { ClerkExpressWithAuth } = require('@clerk/clerk-sdk-node');
 const userSchema = new mongoose.Schema({
     username: { type: String },
     email: { type: String, required: true, unique: true },
+    phoneNumber: { type: String }, // Contact number for Search Party notifications
     clerkId: { type: String, unique: true, sparse: true }, // Added for Clerk integration
     password: { type: String },
     preferences: {
@@ -235,6 +258,42 @@ const exchangeRateSchema = new mongoose.Schema({
 });
 
 const ExchangeRate = mongoose.model('ExchangeRate', exchangeRateSchema);
+
+// Feedback Schema and Model
+const feedbackSchema = new mongoose.Schema({
+    messageId: { type: String, required: true },
+    userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    query: { type: String },
+    isPositive: { type: Boolean, required: true },
+    feedbackText: { type: String },
+    createdAt: { type: Date, default: Date.now }
+});
+
+const Feedback = mongoose.model('Feedback', feedbackSchema);
+
+// --- API Endpoints ---
+
+// Submit Feedback
+app.post('/api/feedback', async (req, res) => {
+    try {
+        const { messageId, query, isPositive, feedbackText } = req.body;
+        const userId = req.userId; // Optional, from auth middleware if available
+
+        const feedback = new Feedback({
+            messageId,
+            userId,
+            query,
+            isPositive,
+            feedbackText
+        });
+
+        await feedback.save();
+        res.status(201).json({ success: true, message: 'Feedback submitted' });
+    } catch (error) {
+        console.error('Error submitting feedback:', error);
+        res.status(500).json({ error: 'Failed to submit feedback' });
+    }
+});
 
 // Product Schema and Model (Vendor Uploaded)
 const productSchema = new mongoose.Schema({
@@ -746,11 +805,17 @@ app.put('/api/user/preferences', authenticateToken, async (req, res) => {
             return res.status(401).json({ error: 'Unauthorized' });
         }
 
-        const { preferences } = req.body;
+        const { preferences, phoneNumber } = req.body;
+
+        const updateData = { $set: { preferences } };
+
+        if (phoneNumber !== undefined) {
+            updateData.$set.phoneNumber = phoneNumber;
+        }
 
         const user = await User.findByIdAndUpdate(
             req.userId,
-            { $set: { preferences } },
+            updateData,
             { new: true }
         ).select('-password');
 
@@ -1450,7 +1515,14 @@ function buildSearchPreferencesPrompt(user) {
 // Generate AI prompt
 function generateAIPrompt(userMessage, searchQuery, user, messageHistory) {
     const basePrompt = `
-You are a shopping assistant AI that helps users find the best deals and products.
+You are **Son of Anton**, an upbeat, friendly, and highly efficient AI shopping assistant.
+Your job is to help the user find exactly what they want to buy, with a focus on finding the best deals and explaining *why* a product is a good choice.
+
+**Your Personality:**
+- Name: Son of Anton
+- Tone: Upbeat, energetic, helpful, and slightly witty.
+- Style: You love emojis 🛍️✨ and use them to make chats feel alive. You are never boring or robotic.
+- Goal: To be the ultimate shopping companion. You take pride in finding hidden gems and great prices.
 
 DECISION LOGIC:
 1. Is the user asking for a product, deal, or shopping advice? -> TRIGGER SEARCH.
@@ -1474,7 +1546,7 @@ Response: I'll find the best Rolex watches for you!
 SEARCH: rolex watches
 
 User: "how are you"
-Response: I'm doing great, ready to help you shop! What are you looking for today?
+Response: I'm awesome and ready to shop! 🛍️ What amazing thing can I help you find today? Son of Anton is at your service! ✨
 
 User: "I need wireless earbuds"
 Response: Let me search for wireless earbuds options!
@@ -2618,7 +2690,7 @@ function startScheduler() {
     setInterval(runScheduledSearches, CRON_INTERVAL);
 }
 
-startScheduler();
+
 
 // Execute search endpoint (called by frontend after chat determines intent)
 app.post('/api/execute-search', async (req, res) => {
@@ -2638,6 +2710,10 @@ app.post('/api/execute-search', async (req, res) => {
         const session = clientSessionId || generateSessionId(req);
 
         console.log(`🔍 Executing search for: "${searchQuery}"`);
+
+        // Notify client that search has started
+        res.write(`event: search-start\n`);
+        res.write(`data: "start"\n\n`);
 
         // Check cache first
         const cacheKey = searchQuery.toLowerCase().trim();
@@ -2787,14 +2863,7 @@ app.post('/api/execute-search', async (req, res) => {
 const EXCHANGE_RATE_INTERVAL = EXCHANGE_RATE_UPDATE_HOURS * 60 * 60 * 1000; // Convert hours to milliseconds
 
 // Fetch exchange rates immediately on startup
-console.log('🚀 Initializing exchange rates on server startup...');
-fetchAndStoreExchangeRates().then((success) => {
-    if (success) {
-        console.log('✅ Initial exchange rates loaded successfully.');
-    } else {
-        console.warn('⚠️ Failed to load initial exchange rates. Will retry on next scheduled update.');
-    }
-});
+
 
 // Schedule periodic updates
 setInterval(async () => {
@@ -2941,3 +3010,151 @@ app.delete('/api/vendor/products/:id', authenticateToken, async (req, res) => {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => console.log(`Server running on port ${PORT}`));
 
+
+// Execute search endpoint with STREAMING (Incremental Results)
+app.post('/api/execute-search-stream', async (req, res) => {
+    const { searchQuery, sessionId: clientSessionId } = req.body;
+    const userId = req.userId;
+
+    if (!searchQuery) {
+        return res.status(400).json({ error: 'Search query is required' });
+    }
+
+    // Set headers for SSE
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+
+    const sendEvent = (event, data) => {
+        res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+    };
+
+    let user = null;
+    if (userId) {
+        try {
+            user = await User.findById(userId).select('-password');
+        } catch (e) { console.error('Error fetching user:', e); }
+    }
+
+    const session = clientSessionId || generateSessionId(req);
+
+    // Accumulate all deals to save at end
+    let allDeals = [];
+
+    try {
+        console.log(`🔍 Stream Searching for: "${searchQuery}"`);
+
+        // 1. Check Cache First (if you want fast response, but maybe skip for streaming demo?)
+        // Let's check cache. If hit, we can just stream it all at once.
+        const cacheKey = searchQuery.toLowerCase().trim();
+        const cachedResult = await getCachedSearch(cacheKey);
+
+        if (cachedResult) {
+            sendEvent('deals', cachedResult.deals);
+            allDeals = cachedResult.deals;
+            sendEvent('done', { totalValid: cachedResult.totalValid, aiDealSummary: cachedResult.aiDealSummary });
+            res.end();
+            return;
+        }
+
+        // 2. Start Local Search (Fastest) AND External Search (Parallel but streamed as they finish)
+
+        // --- LOCAL SEARCH ---
+        let localDealsCount = 0;
+        try {
+            const localProducts = await searchLocalProducts(searchQuery);
+            if (localProducts && localProducts.length > 0) {
+                // Process them similar to findBestDeals but just for local
+                const localDeals = localProducts.map(p => ({
+                    ...p,
+                    source: 'Vendor',
+                    isLocal: true,
+                    // Ensure price format matches expected
+                    originalPrice: p.price,
+                    originalCurrency: 'NGN', // Assuming local is NGN
+                    link: `/product/${p.id}`
+                }));
+
+                if (localDeals.length > 0) {
+                    sendEvent('deals', localDeals);
+                    allDeals.push(...localDeals);
+                    localDealsCount = localDeals.length;
+                }
+            }
+        } catch (err) {
+            console.error("Local search stream error", err);
+        }
+
+        // Notify frontend about local search status for Search Party Popup
+        if (localDealsCount === 0) {
+            sendEvent('local-status', {
+                found: localDealsCount,
+                userHasPhone: !!(user && user.phoneNumber)
+            });
+        }
+
+        // --- EXTERNAL SEARCH ---
+        // We reuse searchAllSources logical parts but maybe broken down if possible? 
+        // searchAllSources does local + axios call. We already did local.
+        // Let's just do the external part here manually to control flow.
+
+        const externalApiUrl = `http://localhost:${process.env.PORT || 5000}/api/search`;
+        try {
+            const apiResponse = await axios.get(externalApiUrl, { params: { q: searchQuery } });
+            const apiResults = apiResponse.data?.results || [];
+
+            // Process these results (price conversion, affiliate links, etc.)
+            // We can reuse findBestDeals logic but we need to pass just these results
+            // Wrap in expected structure for findBestDeals
+            const wrappedResults = { shopping_results: apiResults };
+
+            // Note: findBestDeals filters and does affiliate links.
+            // We might want to use it
+            const processedExternal = await findBestDeals(wrappedResults, searchQuery, userId, session);
+
+            if (processedExternal.deals && processedExternal.deals.length > 0) {
+                sendEvent('deals', processedExternal.deals);
+                allDeals.push(...processedExternal.deals);
+            }
+
+        } catch (err) {
+            console.error("External search stream error", err);
+        }
+
+        // 3. Cache and cleanup
+        if (allDeals.length > 0) {
+            // Update Cache
+            await setCachedSearch(cacheKey, { deals: allDeals, totalValid: allDeals.length, aiDealSummary: null });
+
+            // Update Conversation (Database)
+            // Similar logic to existing execute-search
+            try {
+                const conversation = await Conversation.findOne({ sessionId: session });
+                if (conversation && conversation.messages.length > 0) {
+                    const lastAssistantIndex = conversation.messages.map((m, i) => ({ role: m.role, index: i }))
+                        .reverse()
+                        .find(m => m.role === 'assistant')?.index;
+                    if (lastAssistantIndex !== undefined) {
+                        // We probably want to update it with the FULL list
+                        Object.assign(conversation.messages[lastAssistantIndex], {
+                            type: 'recommendation', // or message
+                            deals: allDeals,
+                            searchQuery: searchQuery
+                        });
+                        conversation.updatedAt = new Date();
+                        await conversation.save();
+                    }
+                }
+            } catch (e) { console.error("Error updating conversation", e); }
+        }
+
+        // Send Done
+        sendEvent('done', { totalValid: allDeals.length });
+        res.end();
+
+    } catch (error) {
+        console.error('Stream execution failed:', error);
+        sendEvent('error', { message: 'Search stream failed' });
+        res.end();
+    }
+});

@@ -23,13 +23,12 @@ app.get('/', (req, res) => {
 });
 
 // Load API keys and configuration from environment variables
-const SERP_API_KEY = process.env.SERP_API_KEY;
 const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY;
 const EXCHANGE_RATE_API_KEY = process.env.EXCHANGE_RATE_API_KEY;
 const JWT_SECRET = process.env.JWT_SECRET || 'your_jwt_secret';
 
-// Base URL for SerpAPI
-const SERP_BASE_URL = 'https://serpapi.com/search';
+// Base URL for SerpAPI - REMOVED
+// const SERP_BASE_URL = 'https://serpapi.com/search';
 
 // Gemini configuration
 const GEMINI_MODEL = 'models/gemini-2.5-pro'; // stable, supports generateContent
@@ -49,52 +48,10 @@ const SEARCH_FREQUENCY_MINUTES = parseInt(process.env.SEARCH_FREQUENCY_MINUTES, 
 const EXCHANGE_RATE_UPDATE_HOURS = parseInt(process.env.EXCHANGE_RATE_UPDATE_HOURS, 10) || 6;
 
 
-// Affiliate configuration
-const AFFILIATE_CONFIGS = {
-    amazon: {
-        // Amazon is ON by default – only turn off by explicitly setting AMAZON_AFFILIATE_ENABLED=false
-        enabled: process.env.AMAZON_AFFILIATE_ENABLED === 'false' ? false : true,
-        // Your affiliate code as the default tag
-        tag: process.env.AMAZON_AFFILIATE_TAG || 'sagato-20',
-        domains: ['amazon.com', 'amazon.co.uk', 'amazon.ca', 'amazon.de', 'amazon.fr', 'amzn.to']
-    },
-    ebay: {
-        enabled: process.env.EBAY_AFFILIATE_ENABLED === 'true',
-        campaignId: process.env.EBAY_CAMPAIGN_ID || 'your-campaign-id',
-        domains: ['ebay.com', 'ebay.co.uk', 'ebay.ca', 'ebay.de']
-    },
-    walmart: {
-        enabled: process.env.WALMART_AFFILIATE_ENABLED === 'true',
-        publisherId: process.env.WALMART_PUBLISHER_ID || 'your-publisher-id',
-        domains: ['walmart.com']
-    }
-};
+// Affiliate configuration - REMOVED
+// const AFFILIATE_CONFIGS = { ... };
 
-// Amazon Product Advertising API (PA-API) setup
-let ProductAdvertisingAPIv1 = null;
-let amazonApi = null;
-let AMAZON_API_ENABLED = false;
-
-try {
-    ProductAdvertisingAPIv1 = require('paapi5-nodejs-sdk');
-
-    const defaultClient = ProductAdvertisingAPIv1.ApiClient.instance;
-    defaultClient.accessKey = process.env.AMAZON_PAAPI_ACCESS_KEY || '';
-    defaultClient.secretKey = process.env.AMAZON_PAAPI_SECRET_KEY || '';
-    defaultClient.host = process.env.AMAZON_PAAPI_HOST || 'webservices.amazon.com';
-    defaultClient.region = process.env.AMAZON_PAAPI_REGION || 'us-east-1';
-
-    amazonApi = new ProductAdvertisingAPIv1.DefaultApi();
-    AMAZON_API_ENABLED = !!(defaultClient.accessKey && defaultClient.secretKey);
-
-    if (!AMAZON_API_ENABLED) {
-        console.warn('⚠️ Amazon PA-API credentials not set. Set AMAZON_PAAPI_ACCESS_KEY and AMAZON_PAAPI_SECRET_KEY to enable direct Amazon search.');
-    } else {
-        console.log('✅ Amazon PA-API client configured.');
-    }
-} catch (error) {
-    console.warn('⚠️ Amazon PA-API SDK not installed. Run "npm install paapi5-nodejs-sdk" to enable direct Amazon search.');
-}
+// Amazon Product Advertising API (PA-API) setup - REMOVED
 
 // Calculate the cron interval
 function getCronInterval() {
@@ -452,271 +409,8 @@ const authenticateToken = async (req, res, next) => {
 
 app.use(authenticateToken);
 
-// Search Amazon via SerpAPI (Fallback)
-async function searchAmazonViaSerpApi(searchQuery) {
-    try {
-        console.log(`⚠️ Using SerpAPI fallback for Amazon search: "${searchQuery}"`);
-        const params = {
-            q: searchQuery,
-            api_key: SERP_API_KEY,
-            engine: 'amazon',
-            type: 'search',
-            amazon_domain: 'amazon.com'
-        };
-
-        const response = await axios.get(SERP_BASE_URL, { params });
-        const results = response.data.search_results || [];
-
-        return results.map(item => ({
-            asin: item.asin,
-            title: item.title,
-            price: item.price ? item.price.value : null,
-            thumbnail: item.thumbnail,
-            link: item.link,
-            source: 'Amazon',
-            rating: item.rating,
-            reviews: item.reviews
-        })).filter(p => p.price !== null);
-
-    } catch (error) {
-        console.error('Error searching Amazon via SerpAPI:', error.message);
-        return [];
-    }
-}
-
-// Search products directly from Amazon Product Advertising API
-async function searchAmazonProducts(searchQuery) {
-    if (!AMAZON_API_ENABLED || !amazonApi || !ProductAdvertisingAPIv1) {
-        console.warn('Amazon PA-API not enabled or SDK not available, using SerpAPI fallback.');
-        return searchAmazonViaSerpApi(searchQuery);
-    }
-
-    const partnerTag = AFFILIATE_CONFIGS.amazon.tag;
-
-    const searchItemsRequest = new ProductAdvertisingAPIv1.SearchItemsRequest();
-    searchItemsRequest['PartnerTag'] = partnerTag;
-    searchItemsRequest['PartnerType'] = 'Associates';
-    searchItemsRequest['Keywords'] = searchQuery;
-    searchItemsRequest['SearchIndex'] = 'All';
-    searchItemsRequest['ItemCount'] = 10;
-    searchItemsRequest['Resources'] = [
-        'Images.Primary.Medium',
-        'ItemInfo.Title',
-        'Offers.Listings.Price',
-        'CustomerReviews.Count',
-        'CustomerReviews.StarRating',
-        'ItemInfo.ByLineInfo',
-        'ItemInfo.ProductInfo'
-    ];
-
-    return new Promise((resolve) => {
-        amazonApi.searchItems(searchItemsRequest, function (error, data, response) {
-            if (error) {
-                console.error('Error calling Amazon PA-API:', error.message || error);
-                console.log('🔄 Switching to SerpAPI fallback for Amazon...');
-                return resolve(searchAmazonViaSerpApi(searchQuery));
-            }
-
-            try {
-                const searchItemsResponse = ProductAdvertisingAPIv1.SearchItemsResponse.constructFromObject(data);
-                const items = (searchItemsResponse.SearchResult && searchItemsResponse.SearchResult.Items) || [];
-
-                const mapped = items
-                    .map((item) => {
-                        const asin = item.ASIN;
-                        const title =
-                            item.ItemInfo &&
-                                item.ItemInfo.Title &&
-                                item.ItemInfo.Title.DisplayValue
-                                ? item.ItemInfo.Title.DisplayValue
-                                : 'Unknown Amazon Product';
-
-                        const image =
-                            item.Images &&
-                                item.Images.Primary &&
-                                item.Images.Primary.Medium &&
-                                item.Images.Primary.Medium.URL
-                                ? item.Images.Primary.Medium.URL
-                                : null;
-
-                        let price = null;
-                        if (
-                            item.Offers &&
-                            item.Offers.Listings &&
-                            item.Offers.Listings[0] &&
-                            item.Offers.Listings[0].Price &&
-                            typeof item.Offers.Listings[0].Price.Amount === 'number'
-                        ) {
-                            price = item.Offers.Listings[0].Price.Amount;
-                        }
-
-                        const rating =
-                            item.CustomerReviews &&
-                                item.CustomerReviews.StarRating &&
-                                item.CustomerReviews.StarRating.DisplayValue
-                                ? item.CustomerReviews.StarRating.DisplayValue
-                                : 'N/A';
-
-                        const reviewsCount =
-                            item.CustomerReviews &&
-                                typeof item.CustomerReviews.Count === 'number'
-                                ? item.CustomerReviews.Count
-                                : 'N/A';
-
-                        const detailUrl = item.DetailPageURL || null;
-
-                        return {
-                            asin,
-                            title,
-                            price,
-                            thumbnail: image,
-                            link: detailUrl,
-                            source: 'Amazon',
-                            rating,
-                            reviews: reviewsCount
-                        };
-                    })
-                    .filter((p) => p.price !== null && p.link);
-
-                return resolve(mapped);
-            } catch (parseError) {
-                console.error('Error parsing Amazon PA-API response:', parseError.message || parseError);
-                return resolve(searchAmazonViaSerpApi(searchQuery));
-            }
-        });
-    });
-}
-
-// Search eBay
-async function searchEbay(searchQuery) {
-    try {
-        console.log(`🛒 Searching eBay for: "${searchQuery}"`);
-        const params = {
-            q: searchQuery,
-            api_key: SERP_API_KEY,
-            engine: 'ebay',
-            ebay_domain: 'ebay.com',
-            _nkw: searchQuery
-        };
-
-        const response = await axios.get(SERP_BASE_URL, { params });
-        const results = response.data.organic_results || [];
-
-        const ebayProducts = results
-            .map(item => {
-                // Parse price
-                let price = null;
-                if (item.price) {
-                    const priceStr = typeof item.price === 'object' ? item.price.raw : item.price;
-                    const priceMatch = priceStr?.toString().match(/[\d,.]+/);
-                    price = priceMatch ? parseFloat(priceMatch[0].replace(/,/g, '')) : null;
-                }
-
-                return {
-                    title: item.title || 'Unknown Product',
-                    price: price,
-                    source: 'eBay',
-                    link: item.link || '#',
-                    thumbnail: item.thumbnail || null,
-                    rating: item.rating || 'N/A',
-                    reviews: item.reviews_count || 'N/A'
-                };
-            })
-            .filter(p => p.price !== null);
-
-        console.log(`✅ Found ${ebayProducts.length} products on eBay`);
-        return ebayProducts;
-    } catch (error) {
-        console.error('Error searching eBay:', error.message);
-        return [];
-    }
-}
-
-// Search Jumia Nigeria
-async function searchJumiaNigeria(searchQuery) {
-    try {
-        console.log(`🇳🇬 Searching Jumia Nigeria for: "${searchQuery}"`);
-        const params = {
-            q: `site:jumia.com.ng ${searchQuery}`,
-            api_key: SERP_API_KEY,
-            engine: 'google',
-            num: 20, // Increased to get more results
-            gl: 'ng',
-            hl: 'en'
-        };
-
-        const response = await axios.get(SERP_BASE_URL, { params });
-        const organicResults = response.data.organic_results || [];
-
-        const jumiaProducts = organicResults
-            .filter(result => result.link && result.link.includes('jumia.com.ng'))
-            .map(result => {
-                // Extract price from snippet or title
-                const priceMatch = result.snippet?.match(/₦\s?([\d,]+)/);
-                const price = priceMatch ? parseFloat(priceMatch[1].replace(/,/g, '')) : null;
-
-                return {
-                    title: result.title || 'Unknown Product',
-                    price: price,
-                    source: 'Jumia Nigeria',
-                    link: result.link,
-                    thumbnail: result.thumbnail || null,
-                    rating: 'N/A',
-                    reviews: 'N/A'
-                };
-            })
-            .filter(p => p.price !== null);
-
-        console.log(`✅ Found ${jumiaProducts.length} products on Jumia Nigeria`);
-        return jumiaProducts;
-    } catch (error) {
-        console.error('Error searching Jumia Nigeria:', error.message);
-        return [];
-    }
-}
-
-// Search Konga Nigeria
-async function searchKongaNigeria(searchQuery) {
-    try {
-        console.log(`🇳🇬 Searching Konga for: "${searchQuery}"`);
-        const params = {
-            q: `site:konga.com ${searchQuery}`,
-            api_key: SERP_API_KEY,
-            engine: 'google',
-            num: 20, // Increased to get more results
-            gl: 'ng',
-            hl: 'en'
-        };
-
-        const response = await axios.get(SERP_BASE_URL, { params });
-        const organicResults = response.data.organic_results || [];
-
-        const kongaProducts = organicResults
-            .filter(result => result.link && result.link.includes('konga.com'))
-            .map(result => {
-                // Extract price from snippet or title
-                const priceMatch = result.snippet?.match(/₦\s?([\d,]+)/);
-                const price = priceMatch ? parseFloat(priceMatch[1].replace(/,/g, '')) : null;
-
-                return {
-                    title: result.title || 'Unknown Product',
-                    price: price,
-                    source: 'Konga',
-                    link: result.link,
-                    thumbnail: result.thumbnail || null,
-                    rating: 'N/A',
-                    reviews: 'N/A'
-                };
-            })
-            .filter(p => p.price !== null);
-
-        console.log(`✅ Found ${kongaProducts.length} products on Konga`);
-        return kongaProducts;
-    } catch (error) {
-        console.error('Error searching Konga:', error.message);
-        return [];
-    }
-}
+// Legacy Search Functions (SerpAPI/Amazon/eBay/Jumia/Konga) - REMOVED
+// Please rely on /api/search which calls the external Custom Search API.
 
 
 // Search Local Vendor Products
@@ -761,15 +455,22 @@ async function searchAllSources(searchQuery, user = null) {
     console.log(`🌍 Searching with country preference: ${country}`);
 
     // Call Local Search and New External Search API in parallel
+    const externalApiUrl = `http://localhost:${process.env.PORT || 5000}/api/search`;
+    console.log(`🌐 Calling External Search API at: ${externalApiUrl}`);
+
     const [localProducts, apiData] = await Promise.all([
         searchLocalProducts(searchQuery).catch(err => {
             console.error('Local search error:', err.message);
             return [];
         }),
-        axios.get(`https://son-of-anton-backend-1n0j.onrender.com/api/search`, {
+        axios.get(externalApiUrl, {
             params: { q: searchQuery }
         }).then(res => res.data).catch(err => {
-            console.error('External Search API error:', err.message);
+            console.error(`External Search API error for ${externalApiUrl}:`, err.message);
+            if (err.response) {
+                console.error('External API Response Status:', err.response.status);
+                console.error('External API Response Data:', err.response.data);
+            }
             return { results: [] };
         })
     ]);
@@ -817,7 +518,7 @@ async function searchAllSources(searchQuery, user = null) {
 
         const mappedItem = {
             price: finalPrice,
-            thumbnail: item.img,
+            thumbnail: item.thumbnail || item.img,
             link: item.link,
             source: item.source,
             title: item.title,
@@ -2433,14 +2134,29 @@ app.post('/api/chat/vision', upload.single('image'), authenticateToken, async (r
             return res.status(400).json({ error: 'No image uploaded' });
         }
 
-        const { sessionId: clientSessionId } = req.body;
+        // Validate MIME type
+        const allowedMimeTypes = ['image/png', 'image/jpeg', 'image/webp', 'image/heic', 'image/heif'];
+        if (!allowedMimeTypes.includes(req.file.mimetype)) {
+            return res.status(400).json({
+                error: `Unsupported image format (${req.file.mimetype}). Please upload PNG, JPEG, WEBP, or HEIC.`
+            });
+        }
+
+        const { sessionId: clientSessionId, message } = req.body;
         const sessionId = clientSessionId || Date.now().toString();
         const userId = req.userId;
 
         console.log('📸 Processing vision request for session:', sessionId);
+        console.log('💬 User caption:', message || 'No caption');
 
         // 1. Analyze Image with Gemini
+        let userInstruction = "";
+        if (message) {
+            userInstruction = `The user also provided this specific instruction/caption: "${message}". Ensure your analysis and search query address this directly.`;
+        }
+
         const prompt = `Identify this product from the image. providing the product name, brand, model, and key visual features.
+        ${userInstruction}
         Then, generate a specific search query to find this exact product and its variations.
         Return the result as a strict JSON object with these fields:
         {
@@ -2476,12 +2192,16 @@ app.post('/api/chat/vision', upload.single('image'), authenticateToken, async (r
         // 3. Generate AI Response about the results
         const resultCount = allResults.length;
         const summaryPrompt = `User uploaded an image of: ${analysis.productName}.
+        User's Caption/Instruction: "${message || 'None'}".
         Description: ${analysis.description}.
         We found ${resultCount} products using query: "${analysis.searchQuery}".
         
-        Write a short, helpful message to the user confirming what you saw in the image and mentioning the results found. 
+        You are the shopping assistant. Reply directly to the user.
+        Address their specific instruction ("${message}") if provided.
+        Confirm what is in the image and mention the results found.
         Mention if you accessed "variations" if relevant.
-        Keep it to 2-3 sentences. Friendly tone.`;
+        Keep it to 2-3 sentences. Friendly tone.
+        DO NOT say "Here is a message" or "I would say". Just say the message directly.`;
 
         const aiMessage = await callGeminiAPI(summaryPrompt);
 
@@ -3086,6 +2806,65 @@ console.log(`✅ Exchange rate cron job scheduled to run every ${EXCHANGE_RATE_U
 
 
 // Vendor Product Routes
+// ----------------------------------------
+// PUBLIC SEARCH API ENDPOINT
+// ----------------------------------------
+app.get('/api/search', async (req, res) => {
+    try {
+        const { q } = req.query;
+        if (!q) {
+            return res.status(400).json({ error: 'Query parameter "q" is required' });
+        }
+
+        console.log(`📡 External API received search request for: "${q}"`);
+        console.log(`🔗 Forwarding to Custom Search API...`);
+
+        // Call Custom Search API
+        const response = await axios.get('https://search-api-backend-7uw8.onrender.com/api/search', {
+            params: { q }
+        });
+
+        const externalData = response.data;
+        const externalResults = externalData.results || [];
+
+        console.log(`✅ Custom API returned ${externalResults.length} results`);
+
+        // Map results to internal format
+        const mappedResults = externalResults.map(item => {
+            // Parse price string (e.g. "$582.99" -> 582.99)
+            let price = 0;
+            if (item.price) {
+                const priceMatch = item.price.toString().match(/[\d,.]+/);
+                price = priceMatch ? parseFloat(priceMatch[0].replace(/,/g, '')) : 0;
+            }
+
+            return {
+                title: item.title,
+                price: price,
+                source: item.source, // 'Amazon', 'eBay', 'Jiji', 'Jumia'
+                link: item.link,
+                thumbnail: item.img, // Map 'img' to 'thumbnail'
+                rating: item.rating || 'N/A',
+                reviews: 'N/A' // Not provided by external API currently
+            };
+        });
+
+        res.json({
+            results: mappedResults,
+            count: mappedResults.length,
+            meta: externalData.counts || {}
+        });
+
+    } catch (error) {
+        console.error('Search API Error:', error.message);
+        if (error.response) {
+            console.error('External API Status:', error.response.status);
+            console.error('External API Data:', error.response.data);
+        }
+        // Fallback to empty results instead of crashing
+        res.json({ results: [], count: 0, meta: {} });
+    }
+});
 
 // 1. Get Vendor's Products
 app.get('/api/vendor/products', authenticateToken, async (req, res) => {

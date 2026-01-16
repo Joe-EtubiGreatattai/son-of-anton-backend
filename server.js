@@ -766,7 +766,7 @@ async function searchAllSources(searchQuery, user = null) {
             console.error('Local search error:', err.message);
             return [];
         }),
-        axios.get(`https://search-api-backend-7uw8.onrender.com/api/search`, {
+        axios.get(`https://son-of-anton-backend-1n0j.onrender.com/api/search`, {
             params: { q: searchQuery }
         }).then(res => res.data).catch(err => {
             console.error('External Search API error:', err.message);

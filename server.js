@@ -17,6 +17,11 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+// Base URL health check
+app.get('/', (req, res) => {
+    res.send('Shopping Bot Backend is running! 🚀');
+});
+
 // Load API keys and configuration from environment variables
 const SERP_API_KEY = process.env.SERP_API_KEY;
 const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY;

@@ -1,6 +1,6 @@
 const axios = require('axios');
 
-const API_URL = 'http://localhost:3000/api/chat';
+const API_URL = 'https://search-api-backend-7uw8.onrender.com/api/chat';
 
 async function testChatEndpoint() {
     console.log('Testing /api/chat endpoint...\n');

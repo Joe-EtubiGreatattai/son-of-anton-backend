@@ -3304,8 +3304,7 @@ app.delete('/api/vendor/products/:id', authenticateToken, async (req, res) => {
     }
 });
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, '0.0.0.0', () => console.log(`Server running on port ${PORT}`));
+
 
 
 // Execute search endpoint with STREAMING (Incremental Results)
@@ -3467,4 +3466,18 @@ app.post('/api/execute-search-stream', async (req, res) => {
         sendEvent('error', { message: 'Search stream failed' });
         res.end();
     }
+});
+
+// Reset conversation endpoint
+app.post('/api/reset', (req, res) => {
+    const { sessionId } = req.body;
+    // In a real app, we might mark the session as inactive or deleted
+    // For now, we just acknowledge the reset
+    console.log(`[Reset] Resetting session: ${sessionId}`);
+    res.json({ success: true, message: 'Conversation reset successfully' });
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`);
 });

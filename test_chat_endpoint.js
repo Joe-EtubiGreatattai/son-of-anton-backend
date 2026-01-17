@@ -1,6 +1,6 @@
 const axios = require('axios');
 
-const API_URL = 'http://192.168.0.127:3000/api/chat';
+const API_URL = 'https://son-of-anton-backend-1n0j.onrender.com/api/chat';
 
 async function testChatEndpoint() {
     console.log('Testing /api/chat endpoint...\n');

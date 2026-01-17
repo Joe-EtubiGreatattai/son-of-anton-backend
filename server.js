@@ -2100,6 +2100,8 @@ async function findBestDeals(results, searchQuery = '', userId = null, sessionId
 
     const shoppingResults = results.shopping_results;
     const validResults = [];
+    const seenItems = new Set(); // START DEDUPLICATION
+
     console.log(`🔍 findBestDeals: Input results count: ${shoppingResults.length}`);
 
     for (const item of shoppingResults) {
@@ -2113,6 +2115,21 @@ async function findBestDeals(results, searchQuery = '', userId = null, sessionId
 
         if (isNaN(price)) continue;
 
+        // DEDUPLICATION: Create a unique key
+        const source = item.source || item.merchant || item.store || 'Unknown';
+        const title = item.title || 'Unknown Product';
+
+        // Normalize title for better matching (lowercase, remove excess spaces)
+        const normalizedTitle = title.toLowerCase().trim().replace(/\s+/g, ' ');
+        // Unique key: Source + Title + Price (approx)
+        const uniqueKey = `${source.toLowerCase()}-${normalizedTitle}-${price}`;
+
+        if (seenItems.has(uniqueKey)) {
+            // console.log(`Start skipping duplicate: ${uniqueKey}`);
+            continue;
+        }
+        seenItems.add(uniqueKey);
+
         const imageUrl =
             item.thumbnail ||
             item.image ||
@@ -2125,9 +2142,6 @@ async function findBestDeals(results, searchQuery = '', userId = null, sessionId
             item.url ||
             (item.product && item.product.link) ||
             '#';
-
-        const source = item.source || item.merchant || item.store || 'Unknown';
-        const title = item.title || 'Unknown Product';
 
         const validLink = ensureValidProductLink(originalLink, title, source);
 
@@ -2215,7 +2229,7 @@ async function findBestDeals(results, searchQuery = '', userId = null, sessionId
         // Fallback to keyword detection if category not provided
         const gadgetKeywords = ['phone', 'laptop', 'tablet', 'headphone', 'earphone', 'airpod', 'watch', 'smartwatch',
             'speaker', 'computer', 'monitor', 'keyboard', 'mouse', 'camera', 'tv', 'television',
-            'console', 'playstation', 'xbox', 'gadget', 'electronic', 'charger', 'cable', 'adapter'];
+            'console', 'playstation', 'xbox', 'gadget', 'electronic', 'charger', 'cable', 'adapter', 'power bank', 'powerbank'];
         isGadgetQuery = gadgetKeywords.some(keyword =>
             searchQuery.toLowerCase().includes(keyword)
         );
@@ -2275,16 +2289,18 @@ async function findBestDeals(results, searchQuery = '', userId = null, sessionId
     };
 
     // Prioritization logic:
-    // - Amazon always first
-    // - Local Nigerian stores are interleaved for variety
+    // - Gadgets: Slot.ng, then Amazon, then others
+    // - Others: Amazon, then local interleaved
     let orderedResults;
     if (isGadgetQuery) {
-        // Gadgets: Prioritize Slot, then others
-        const localInterleaved = interleave(slotResults, kongaResults, jijiResults, ajeboResults, dexStitchesResults, otherResults);
-        orderedResults = [...amazonResults, ...localInterleaved];
+        // Gadgets: Prioritize Slot, then Amazon, then others interleaved
+        // Note: Slot is EXCLUDED from localInterleaved here because we handle it explicitly first
+        const localInterleaved = interleave(kongaResults, jijiResults, ajeboResults, dexStitchesResults, otherResults);
+        orderedResults = [...slotResults, ...amazonResults, ...localInterleaved];
     } else {
-        // Non-gadgets: NO Slot, prioritize Konga, Ajebo and DexStitches
-        const localInterleaved = interleave(kongaResults, ajeboResults, dexStitchesResults, jijiResults, otherResults);
+        // Non-gadgets: Amazon first, then typical local mix (Slot included in mix if present)
+        // Note: Slot is INCLUDED in localInterleaved here
+        const localInterleaved = interleave(kongaResults, ajeboResults, dexStitchesResults, jijiResults, slotResults, otherResults);
         orderedResults = [...amazonResults, ...localInterleaved];
     }
 

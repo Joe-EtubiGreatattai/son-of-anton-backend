@@ -3,6 +3,7 @@ require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
 const cors = require('cors');
+const chalk = require('chalk');
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
@@ -271,6 +272,26 @@ const feedbackSchema = new mongoose.Schema({
 
 const Feedback = mongoose.model('Feedback', feedbackSchema);
 
+// Conversation Schema and Model (Chat History)
+const conversationSchema = new mongoose.Schema({
+    userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+    sessionId: { type: String, required: true },
+    title: { type: String },
+    messages: [
+        {
+            role: { type: String, enum: ['user', 'assistant', 'system'], required: true },
+            content: { type: String, required: true }, // Can be text or JSON string for complex UI
+            timestamp: { type: Date, default: Date.now },
+            metadata: { type: mongoose.Schema.Types.Mixed } // For storing product details, etc.
+        }
+    ],
+    createdAt: { type: Date, default: Date.now },
+    updatedAt: { type: Date, default: Date.now }
+});
+
+conversationSchema.index({ userId: 1, sessionId: 1 });
+const Conversation = mongoose.model('Conversation', conversationSchema);
+
 // --- API Endpoints ---
 
 // Submit Feedback
@@ -295,6 +316,16 @@ app.post('/api/feedback', async (req, res) => {
     }
 });
 
+// Get all feedback (Admin)
+app.get('/api/admin/feedback', async (req, res) => {
+    try {
+        const feedback = await Feedback.find().populate('userId', 'username email').sort({ createdAt: -1 });
+        res.json({ feedback });
+    } catch (error) {
+        console.error('Error fetching feedback:', error);
+        res.status(500).json({ error: 'Failed to fetch feedback' });
+    }
+});
 // Product Schema and Model (Vendor Uploaded)
 const productSchema = new mongoose.Schema({
     vendorId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
@@ -507,7 +538,7 @@ async function searchLocalProducts(searchQuery) {
 
 // Unified search: Nigerian platforms (Jumia, Konga) + Amazon + Google Shopping
 // Unified search: Nigerian platforms (Jumia, Konga) + Amazon + Google Shopping
-async function searchAllSources(searchQuery, user = null) {
+async function searchAllSources(searchQuery, user = null, category = 'other') {
     // Default to Nigeria for all searches
     const country = user?.preferences?.country || 'NG';
 
@@ -523,7 +554,7 @@ async function searchAllSources(searchQuery, user = null) {
             return [];
         }),
         axios.get(externalApiUrl, {
-            params: { q: searchQuery }
+            params: { q: searchQuery, category: category || 'other' }
         }).then(res => res.data).catch(err => {
             console.error(`External Search API error for ${externalApiUrl}:`, err.message);
             if (err.response) {
@@ -541,6 +572,7 @@ async function searchAllSources(searchQuery, user = null) {
     const foreignResults = [];
 
     // Process Local Results
+    console.log(`📦 Found ${localProducts.length} local database products`);
     for (const p of localProducts) {
         nigerianResults.push({ ...p, isNigerian: true });
     }
@@ -563,17 +595,27 @@ async function searchAllSources(searchQuery, user = null) {
     };
 
     // Process API Results
+    console.log(`🔍 Backend received ${apiResults?.length || 0} raw results from scrapper.`);
+    if (apiResults && apiResults.length > 0) {
+        const rawSources = apiResults.map(r => r.source);
+        console.log(`   📍 Raw sources in scrapper response: ${Array.from(new Set(rawSources)).join(', ')}`);
+    }
+
     for (const item of apiResults) {
-        const { val, cur } = parsePrice(item.price);
+        const { val, cur: detectedCur } = parsePrice(item.price);
+
+        // Determine if Nigerian source
+        const isNigerianSource = ['Jumia', 'Jiji', 'Konga', 'Slot', 'Ajebo', 'DexStitches'].some(s => item.source && item.source.includes(s));
+
+        // If it's a Nigerian source and no currency was detected (or defaulting to USD), assume NGN
+        const cur = (isNigerianSource && (!item.price || (!item.price.includes('$') && !item.price.includes('€') && !item.price.includes('£')))) ? 'NGN' : detectedCur;
+
         let finalPrice = val;
 
         // Convert foreign currency to NGN for Nigerian users
         if (country === 'NG' && cur !== 'NGN' && convertToNGN) {
             finalPrice = await convertToNGN(val, cur);
         }
-
-        // Determine if Nigerian source
-        const isNigerianSource = ['Jumia', 'Jiji', 'Konga'].some(s => item.source && item.source.includes(s));
 
         const mappedItem = {
             price: finalPrice,
@@ -595,33 +637,49 @@ async function searchAllSources(searchQuery, user = null) {
         }
     }
 
+    console.log(`📊 Processing complete. Nigerian: ${nigerianResults.length}, Foreign: ${foreignResults.length}`);
+
+    // Debug: log sources of nigerian results
+    const sources = nigerianResults.map(r => r.source);
+    console.log(`📍 Nigerian sources found: ${Array.from(new Set(sources)).join(', ')}`);
+
     // For non-Nigerian users, return all results combined
     if (country !== 'NG') {
         return { shopping_results: [...foreignResults, ...nigerianResults] };
     }
 
-    // Blending Logic: ~65% Nigerian, ~35% International
-    // Pattern: NG, NG, Foreign, NG, Foreign (repeating)
+    // Interleave Nigerian sources for variety before blending
+    const kongaResults = nigerianResults.filter(r => r.source && r.source.toLowerCase().includes('konga'));
+    const ajeboResults = nigerianResults.filter(r => r.source && r.source.toLowerCase().includes('ajebo'));
+    const dexResults = nigerianResults.filter(r => r.source && r.source.toLowerCase().includes('dexstitches'));
+    const jijiResults = nigerianResults.filter(r => r.source && r.source.toLowerCase().includes('jiji'));
+    const slotResults = nigerianResults.filter(r => r.source && r.source.toLowerCase().includes('slot'));
+    const otherNGResults = nigerianResults.filter(r => !kongaResults.includes(r) && !ajeboResults.includes(r) && !dexResults.includes(r) && !jijiResults.includes(r) && !slotResults.includes(r));
+
+    const interleavedNigerian = [];
+    const maxNG = Math.max(kongaResults.length, ajeboResults.length, dexResults.length, jijiResults.length, slotResults.length, otherNGResults.length);
+    for (let i = 0; i < maxNG; i++) {
+        if (kongaResults[i]) interleavedNigerian.push(kongaResults[i]);
+        if (ajeboResults[i]) interleavedNigerian.push(ajeboResults[i]);
+        if (dexResults[i]) interleavedNigerian.push(dexResults[i]);
+        if (jijiResults[i]) interleavedNigerian.push(jijiResults[i]);
+        if (slotResults[i]) interleavedNigerian.push(slotResults[i]);
+        if (otherNGResults[i]) interleavedNigerian.push(otherNGResults[i]);
+    }
+
+    // Blending Logic: 90% Nigerian (interleaved), 10% International
     const blendedResults = [];
     let ngIndex = 0;
     let foreignIndex = 0;
 
-    while (ngIndex < nigerianResults.length || foreignIndex < foreignResults.length) {
-        // Add 2 Nigerian items
-        for (let i = 0; i < 2; i++) {
-            if (ngIndex < nigerianResults.length) {
-                blendedResults.push(nigerianResults[ngIndex++]);
+    while (ngIndex < interleavedNigerian.length || foreignIndex < foreignResults.length) {
+        // Add up to 9 Nigerian items
+        for (let i = 0; i < 9; i++) {
+            if (ngIndex < interleavedNigerian.length) {
+                blendedResults.push(interleavedNigerian[ngIndex++]);
             }
         }
         // Add 1 International item
-        if (foreignIndex < foreignResults.length) {
-            blendedResults.push(foreignResults[foreignIndex++]);
-        }
-        // Add 1 more Nigerian item
-        if (ngIndex < nigerianResults.length) {
-            blendedResults.push(nigerianResults[ngIndex++]);
-        }
-        // Add 1 more International item
         if (foreignIndex < foreignResults.length) {
             blendedResults.push(foreignResults[foreignIndex++]);
         }
@@ -775,6 +833,140 @@ app.post('/api/google-auth', async (req, res) => {
     } catch (error) {
         console.error('Google auth error:', error);
         res.status(500).json({ error: 'Google authentication failed' });
+    }
+});
+
+// --- User Data Sync Endpoints ---
+
+// Sync Local Data (Cart, Messages) to Backend
+app.post('/api/user/sync', authenticateToken, async (req, res) => {
+    try {
+        const userId = req.userId;
+        if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+
+        const { cart, messages, preferences, sessionId, conversationTitle } = req.body;
+
+        console.log(`🔄 Syncing data for user ${userId}...`);
+
+        // 1. Sync Preferences
+        if (preferences) {
+            await User.findByIdAndUpdate(userId, { $set: { preferences } });
+        }
+
+        // 2. Sync Cart
+        if (cart && cart.length > 0) {
+            let userCart = await Cart.findOne({ userId });
+            if (!userCart) {
+                userCart = new Cart({ userId, items: cart });
+            } else {
+                // Effective merge:
+                // Map existing cloud items by link/id
+                const cloudItemsMap = new Map(userCart.items.map(i => [i.link, i]));
+
+                cart.forEach(localItem => {
+                    if (!cloudItemsMap.has(localItem.link)) {
+                        userCart.items.push(localItem);
+                    }
+                });
+            }
+            userCart.updatedAt = Date.now();
+            await userCart.save();
+        }
+
+        // 3. Sync Conversation/Messages
+        if (sessionId && messages && messages.length > 0) {
+            let conversation = await Conversation.findOne({ userId, sessionId });
+
+            // Helper to handle various date formats (including "14:03" strings)
+            const parseTimestamp = (ts) => {
+                if (!ts) return new Date();
+                if (ts instanceof Date) return ts;
+
+                // If it's a string like "14:03" or "2:30 PM", convert to today's date
+                if (typeof ts === 'string') {
+                    const timeMatch = ts.match(/^(\d{1,2}):(\d{2})(\s?[APap][Mm])?$/);
+                    if (timeMatch) {
+                        const now = new Date();
+                        let hours = parseInt(timeMatch[1]);
+                        const minutes = parseInt(timeMatch[2]);
+                        const period = timeMatch[3];
+
+                        if (period) {
+                            if (period.toLowerCase().includes('pm') && hours < 12) hours += 12;
+                            if (period.toLowerCase().includes('am') && hours === 12) hours = 0;
+                        }
+
+                        now.setHours(hours, minutes, 0, 0);
+                        return now;
+                    }
+                    // Try standard date parse
+                    const parsed = new Date(ts);
+                    if (!isNaN(parsed.getTime())) return parsed;
+                }
+
+                return new Date(); // Fallback
+            };
+
+            if (!conversation) {
+                // Create new conversation
+                conversation = new Conversation({
+                    userId,
+                    sessionId,
+                    title: conversationTitle || 'New Conversation',
+                    messages: messages.map(m => ({
+                        role: m.role || (m.isBot ? 'assistant' : 'user'),
+                        content: m.text || m.content,
+                        timestamp: parseTimestamp(m.timestamp),
+                        metadata: m
+                    }))
+                });
+            } else {
+                // Update existing conversation (replace history with latest synced version)
+                conversation.messages = messages.map(m => ({
+                    role: m.role || (m.isBot ? 'assistant' : 'user'),
+                    content: m.text || m.content,
+                    timestamp: parseTimestamp(m.timestamp),
+                    metadata: m
+                }));
+                conversation.updatedAt = Date.now();
+                if (conversationTitle) conversation.title = conversationTitle;
+            }
+            await conversation.save();
+        }
+
+        res.json({ success: true, message: 'Data synced successfully' });
+    } catch (error) {
+        console.error('Sync error:', error);
+        res.status(500).json({ error: 'Sync failed' });
+    }
+});
+
+// Get User Data (Cart, History)
+app.get('/api/user/data', authenticateToken, async (req, res) => {
+    try {
+        const userId = req.userId;
+        if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+
+        const [user, cart, conversations] = await Promise.all([
+            User.findById(userId).select('preferences searchPreferences'),
+            Cart.findOne({ userId }),
+            Conversation.find({ userId }).sort({ updatedAt: -1 }).limit(10) // Get last 10 convos
+        ]);
+
+        res.json({
+            preferences: user?.preferences || {},
+            searchPreferences: user?.searchPreferences || {},
+            cart: cart?.items || [],
+            conversations: conversations.map(c => ({
+                sessionId: c.sessionId,
+                title: c.title,
+                messages: c.messages,
+                updatedAt: c.updatedAt
+            }))
+        });
+    } catch (error) {
+        console.error('Fetch user data error:', error);
+        res.status(500).json({ error: 'Failed to fetch user data' });
     }
 });
 
@@ -1334,61 +1526,7 @@ const searchResultSchema = new mongoose.Schema({
 const SearchResult = mongoose.model('SearchResult', searchResultSchema);
 
 // Conversation Schema for persistent storage
-const conversationSchema = new mongoose.Schema({
-    sessionId: { type: String, required: true, unique: true, index: true },
-    userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', index: true },
-    messages: [{
-        role: { type: String, enum: ['user', 'assistant'], required: true },
-        content: { type: String, required: true },
-        timestamp: { type: Date, default: Date.now },
-        // Additional fields for rich message content
-        type: { type: String }, // 'message', 'recommendation', 'search_parties_list', 'cart_command', 'cart_show'
-        deals: [{
-            title: String,
-            price: Number,
-            source: String,
-            link: String,
-            image: String,
-            rating: String,
-            reviews: String,
-            inCart: Boolean
-        }],
-        recommendation: {
-            deal: {
-                title: String,
-                price: Number,
-                source: String,
-                link: String,
-                image: String,
-                rating: String,
-                reviews: String,
-                inCart: Boolean
-            },
-            reason: String
-        },
-        searchQuery: { type: String },
-        searchParties: [{
-            id: String,
-            itemName: String,
-            maxPrice: Number,
-            preferences: String,
-            isActive: Boolean,
-            searchFrequency: Number,
-            lastSearched: String,
-            foundResults: Number,
-            createdAt: String
-        }],
-        command: {
-            action: String,
-            items: [String]
-        },
-        cart: { type: mongoose.Schema.Types.Mixed }
-    }],
-    createdAt: { type: Date, default: Date.now },
-    updatedAt: { type: Date, default: Date.now }
-});
 
-const Conversation = mongoose.model('Conversation', conversationSchema);
 
 // Shared Link Schema for sharing content
 const sharedLinkSchema = new mongoose.Schema({
@@ -1531,31 +1669,51 @@ DECISION LOGIC:
 RESPONSE FORMAT (If Shopping):
 1) Brief conversational response (1-2 sentences max).
 2) IMMEDIATELY add a new line starting with: SEARCH: <product query>
+3) IMMEDIATELY add a new line starting with: CATEGORY: <category> (Choose from: gadget, fashion, food, decor, beauty, auto, other)
 
 RESPONSE FORMAT (If Casual Chat):
 1) Just respond conversationally.
-2) Do NOT include "SEARCH:".
+2) Do NOT include "SEARCH:" or "CATEGORY:".
 
 SEARCH FORMAT:
 - SEARCH: simple product keywords
-- Be concise with the search query (2-5 words)
+- Be concise (2-5 words)
+- CATEGORY: Choose the best fit from: gadget, fashion, food, decor, beauty, auto, other.
+
+CATEGORIZATION RULES:
+- gadget: Phones, laptops, electronics, appliances, accessories.
+- fashion: Clothes, shoes, bags, jewelry, sneakers, watches (if luxury/style).
+- food: Groceries, snacks, drinks.
+- decor: Furniture, home items, rugs.
+- beauty: Skincare, makeup, perfume.
+- auto: Car parts, accessories.
+- other: Anything else.
 
 EXAMPLES:
 User: "help me find a rolex"
 Response: I'll find the best Rolex watches for you!
 SEARCH: rolex watches
+CATEGORY: fashion
 
-User: "how are you"
-Response: I'm awesome and ready to shop! 🛍️ What amazing thing can I help you find today? Son of Anton is at your service! ✨
+User: "I need new sneakers"
+Response: Let me search for some cool sneakers for you! 👟
+SEARCH: popular sneakers
+CATEGORY: fashion
 
-User: "I need wireless earbuds"
-Response: Let me search for wireless earbuds options!
-SEARCH: wireless earbuds
+User: "iphone 13 pro"
+Response: I'll check the best prices for iPhone 13 Pro!
+SEARCH: iphone 13 pro
+CATEGORY: gadget
+
+User: "I want a blender"
+Response: I'll find some high-quality blenders for you!
+SEARCH: kitchen blender
+CATEGORY: gadget
 
 IMPORTANT RULES:
-- If user mentions ANY product name, category, or shopping intent → ADD SEARCH:
-- If user is just chatting → NO SEARCH.
-- Keep your response SHORT (under 20 words) when triggering a search
+- ALWAYS include CATEGORY: if you include SEARCH:.
+- If user mentions sneakers, dresses, or shirts, use CATEGORY: fashion.
+- If user mentions phones, laptops, or electronics, use CATEGORY: gadget.
 `;
 
     const userPrefPrompt = buildUserPreferencesPrompt(user);
@@ -1624,6 +1782,34 @@ async function callGeminiAPI(prompt, imageBuffer = null, mimeType = null) {
     } catch (error) {
         console.error('Gemini API Error:', error.response?.data || error.message);
         throw new Error('Failed to generate a response from Gemini');
+    }
+}
+
+// Function to detect category using AI
+async function detectCategoryWithAI(query) {
+    try {
+        console.log(`🤖 Asking AI to categorize: "${query}"`);
+        const prompt = `Classify this shopping query into exactly one of these categories: gadget, fashion, food, decor, beauty, auto, other.
+Current Query: "${query}"
+
+Return ONLY the category name. No other text.`;
+
+        const response = await callGeminiAPI(prompt);
+        const category = response.toLowerCase().trim().replace(/[^\w]/g, '');
+
+        const validCategories = ['gadget', 'fashion', 'food', 'decor', 'beauty', 'auto', 'other'];
+        if (validCategories.includes(category)) {
+            return category;
+        }
+
+        // Contextual fallback
+        if (category.includes('gadget') || category.includes('tech') || category.includes('electronic')) return 'gadget';
+        if (category.includes('fashion') || category.includes('cloth') || category.includes('wear') || category.includes('shoe')) return 'fashion';
+
+        return 'other';
+    } catch (e) {
+        console.error('AI Category detection failed:', e.message);
+        return 'other';
     }
 }
 
@@ -1907,13 +2093,14 @@ function addAffiliateLink(link, source) {
 
 // Find best deals with affiliate tracking
 // Amazon (from PA-API) is treated as the primary source, other stores are secondary
-async function findBestDeals(results, searchQuery = '', userId = null, sessionId = null) {
+async function findBestDeals(results, searchQuery = '', userId = null, sessionId = null, category = null) {
     if (!results || !results.shopping_results) {
         return { deals: null, totalValid: null };
     }
 
     const shoppingResults = results.shopping_results;
     const validResults = [];
+    console.log(`🔍 findBestDeals: Input results count: ${shoppingResults.length}`);
 
     for (const item of shoppingResults) {
         if (!item.price) continue;
@@ -1972,7 +2159,9 @@ async function findBestDeals(results, searchQuery = '', userId = null, sessionId
             source.toLowerCase().includes('jumia') ||
             source.toLowerCase().includes('konga') ||
             source.toLowerCase().includes('jiji') ||
-            source.toLowerCase().includes('slot')
+            source.toLowerCase().includes('slot') ||
+            source.toLowerCase().includes('ajebo') ||
+            source.toLowerCase().includes('dexstitches')
         );
 
         let convertedPrice;
@@ -2015,18 +2204,89 @@ async function findBestDeals(results, searchQuery = '', userId = null, sessionId
         return { deals: null, totalValid: null };
     }
 
+    // Detect if this is a gadget or fashion query
+    let isGadgetQuery = false;
+    let isFashionQuery = false;
+
+    if (category) {
+        isGadgetQuery = category === 'gadget';
+        isFashionQuery = category === 'fashion';
+    } else {
+        // Fallback to keyword detection if category not provided
+        const gadgetKeywords = ['phone', 'laptop', 'tablet', 'headphone', 'earphone', 'airpod', 'watch', 'smartwatch',
+            'speaker', 'computer', 'monitor', 'keyboard', 'mouse', 'camera', 'tv', 'television',
+            'console', 'playstation', 'xbox', 'gadget', 'electronic', 'charger', 'cable', 'adapter'];
+        isGadgetQuery = gadgetKeywords.some(keyword =>
+            searchQuery.toLowerCase().includes(keyword)
+        );
+
+        const fashionKeywords = ['shirt', 'pant', 'shoe', 'sneaker', 'dress', 'jacket', 'cloth', 'wear', 'bag', 'fashion', 'jean', 'jeans', 'hoodie', 'sweater', 'boutique'];
+        isFashionQuery = fashionKeywords.some(keyword =>
+            searchQuery.toLowerCase().includes(keyword)
+        );
+    }
+
     const amazonResults = resultsWithValidLinks.filter((d) =>
         d.source && d.source.toLowerCase().includes('amazon')
     );
+    const slotResults = resultsWithValidLinks.filter((d) =>
+        d.source && d.source.toLowerCase().includes('slot')
+    );
+    const kongaResults = resultsWithValidLinks.filter((d) =>
+        d.source && d.source.toLowerCase().includes('konga')
+    );
+    const jijiResults = resultsWithValidLinks.filter((d) =>
+        d.source && d.source.toLowerCase().includes('jiji')
+    );
+    const ajeboResults = resultsWithValidLinks.filter((d) =>
+        d.source && d.source.toLowerCase().includes('ajebo')
+    );
+    const dexStitchesResults = resultsWithValidLinks.filter((d) =>
+        d.source && d.source.toLowerCase().includes('dexstitches')
+    );
     const otherResults = resultsWithValidLinks.filter(
-        (d) => !d.source || !d.source.toLowerCase().includes('amazon')
+        (d) => !d.source ||
+            (!d.source.toLowerCase().includes('amazon') &&
+                !d.source.toLowerCase().includes('slot') &&
+                !d.source.toLowerCase().includes('konga') &&
+                !d.source.toLowerCase().includes('jiji') &&
+                !d.source.toLowerCase().includes('ajebo') &&
+                !d.source.toLowerCase().includes('dexstitches'))
     );
 
     amazonResults.sort((a, b) => a.price - b.price);
+    slotResults.sort((a, b) => a.price - b.price);
+    kongaResults.sort((a, b) => a.price - b.price);
+    jijiResults.sort((a, b) => a.price - b.price);
+    ajeboResults.sort((a, b) => a.price - b.price);
+    dexStitchesResults.sort((a, b) => a.price - b.price);
     otherResults.sort((a, b) => a.price - b.price);
 
-    const orderedResults =
-        amazonResults.length > 0 ? [...amazonResults, ...otherResults] : otherResults;
+    // Helper to interleave lists for better source variety
+    const interleave = (...lists) => {
+        const result = [];
+        const maxLen = Math.max(...lists.map(l => l.length));
+        for (let i = 0; i < maxLen; i++) {
+            for (const list of lists) {
+                if (list[i]) result.push(list[i]);
+            }
+        }
+        return result;
+    };
+
+    // Prioritization logic:
+    // - Amazon always first
+    // - Local Nigerian stores are interleaved for variety
+    let orderedResults;
+    if (isGadgetQuery) {
+        // Gadgets: Prioritize Slot, then others
+        const localInterleaved = interleave(slotResults, kongaResults, jijiResults, ajeboResults, dexStitchesResults, otherResults);
+        orderedResults = [...amazonResults, ...localInterleaved];
+    } else {
+        // Non-gadgets: NO Slot, prioritize Konga, Ajebo and DexStitches
+        const localInterleaved = interleave(kongaResults, ajeboResults, dexStitchesResults, jijiResults, otherResults);
+        orderedResults = [...amazonResults, ...localInterleaved];
+    }
 
     return {
         deals: orderedResults.slice(0, 10),
@@ -2362,13 +2622,23 @@ app.post('/api/chat', async (req, res) => {
 
         let aiResponse = await callGeminiAPI(aiPrompt);
 
-        let shouldSearch = false;
         let extractedSearchQuery = searchQuery;
+        let extractedCategory = 'other';
+        let shouldSearch = false;
 
         if (aiResponse.includes('SEARCH:')) {
             shouldSearch = true;
-            extractedSearchQuery = aiResponse.split('SEARCH:')[1].trim();
-            aiResponse = aiResponse.split('SEARCH:')[0].trim();
+            const searchLines = aiResponse.split('\n');
+            const searchLine = searchLines.find(line => line.includes('SEARCH:'));
+            extractedSearchQuery = searchLine.split('SEARCH:')[1].trim();
+
+            const categoryLine = searchLines.find(line => line.includes('CATEGORY:'));
+            if (categoryLine) {
+                extractedCategory = categoryLine.split('CATEGORY:')[1].trim().toLowerCase();
+            }
+
+            // Clean AI response from markers
+            aiResponse = aiResponse.replace(/SEARCH:.*(\n?)/, '').replace(/CATEGORY:.*(\n?)/, '').trim();
         }
 
         sessionHistory.push({ role: 'assistant', content: aiResponse });
@@ -2399,6 +2669,7 @@ app.post('/api/chat', async (req, res) => {
             sessionId: session,
             shouldSearch,
             searchQuery: extractedSearchQuery || searchQuery,
+            category: extractedCategory,
             deals: null, // Frontend will fetch these if shouldSearch is true
             totalValid: 0,
             aiDealSummary: null
@@ -2435,9 +2706,19 @@ app.post('/api/search', async (req, res) => {
         let shouldSearch = aiResponse.includes('SEARCH:');
 
         let extractedSearchQuery = searchQuery;
+        let extractedCategory = 'other';
+
         if (shouldSearch) {
-            extractedSearchQuery = aiResponse.split('SEARCH:')[1].trim();
-            aiResponse = aiResponse.split('SEARCH:')[0].trim();
+            const searchLines = aiResponse.split('\n');
+            const searchLine = searchLines.find(line => line.includes('SEARCH:'));
+            extractedSearchQuery = searchLine.split('SEARCH:')[1].trim();
+
+            const categoryLine = searchLines.find(line => line.includes('CATEGORY:'));
+            if (categoryLine) {
+                extractedCategory = categoryLine.split('CATEGORY:')[1].trim().toLowerCase();
+            }
+
+            aiResponse = aiResponse.replace(/SEARCH:.*(\n?)/, '').replace(/CATEGORY:.*(\n?)/, '').trim();
         }
 
         if (!shouldSearch) {
@@ -2458,9 +2739,9 @@ app.post('/api/search', async (req, res) => {
                 totalValid = cachedResult.totalValid;
                 aiDealSummary = cachedResult.aiDealSummary;
             } else {
-                console.log(`🔍 Performing fresh search for: "${extractedSearchQuery}"`);
-                const searchResults = await searchAllSources(extractedSearchQuery, user);
-                const result = await findBestDeals(searchResults, extractedSearchQuery, user?._id, session);
+                console.log(`🔍 Performing fresh search for: "${extractedSearchQuery}" in category: ${extractedCategory}`);
+                const searchResults = await searchAllSources(extractedSearchQuery, user, extractedCategory);
+                const result = await findBestDeals(searchResults, extractedSearchQuery, user?._id, session, extractedCategory);
                 deals = result.deals;
                 totalValid = result.totalValid;
 
@@ -2556,18 +2837,27 @@ app.post('/api/shopping-search', async (req, res) => {
 
             let shouldSearch = false;
             let extractedSearchQuery = searchQuery;
+            let extractedCategory = 'other';
 
             if (aiResponse.includes('SEARCH:')) {
                 shouldSearch = true;
-                extractedSearchQuery = aiResponse.split('SEARCH:')[1].trim();
-                displayMessage = aiResponse.split('SEARCH:')[0].trim();
+                const searchLines = aiResponse.split('\n');
+                const searchLine = searchLines.find(line => line.includes('SEARCH:'));
+                extractedSearchQuery = searchLine.split('SEARCH:')[1].trim();
+
+                const categoryLine = searchLines.find(line => line.includes('CATEGORY:'));
+                if (categoryLine) {
+                    extractedCategory = categoryLine.split('CATEGORY:')[1].trim().toLowerCase();
+                }
+
+                displayMessage = aiResponse.replace(/SEARCH:.*(\n?)/, '').replace(/CATEGORY:.*(\n?)/, '').trim();
             } else {
                 shouldSearch = true;
                 extractedSearchQuery = searchQuery || userMessage;
                 displayMessage = aiResponse;
             }
 
-            const searchResults = await searchAllSources(extractedSearchQuery, user);
+            const searchResults = await searchAllSources(extractedSearchQuery, user, extractedCategory);
             const { deals, totalValid } = await findBestDeals(searchResults, extractedSearchQuery, user?._id, session);
             let aiDealSummary = null;
 
@@ -2582,7 +2872,7 @@ app.post('/api/shopping-search', async (req, res) => {
                 aiDealSummary
             });
         } else {
-            const searchResults = await searchAllSources(searchQuery || userMessage, user);
+            const searchResults = await searchAllSources(searchQuery || userMessage, user, 'other');
             const { deals, totalValid } = await findBestDeals(searchResults, searchQuery || userMessage, user?._id, session);
             const displayMessage = `Here are some deals I found for "${searchQuery || userMessage}". Want me to help compare them or suggest the best one?`;
 
@@ -2695,7 +2985,7 @@ function startScheduler() {
 // Execute search endpoint (called by frontend after chat determines intent)
 app.post('/api/execute-search', async (req, res) => {
     try {
-        const { searchQuery, sessionId: clientSessionId } = req.body;
+        const { searchQuery, category, sessionId: clientSessionId } = req.body;
         const userId = req.userId;
 
         if (!searchQuery) {
@@ -2728,7 +3018,7 @@ app.post('/api/execute-search', async (req, res) => {
             totalValid = cachedResult.totalValid;
             aiDealSummary = cachedResult.aiDealSummary;
         } else {
-            const searchResults = await searchAllSources(searchQuery, user);
+            const searchResults = await searchAllSources(searchQuery, user, category || 'other');
             const result = await findBestDeals(searchResults, searchQuery, user?._id, session);
             deals = result.deals;
             totalValid = result.totalValid;
@@ -2880,21 +3170,28 @@ console.log(`✅ Exchange rate cron job scheduled to run every ${EXCHANGE_RATE_U
 // ----------------------------------------
 app.get('/api/search', async (req, res) => {
     try {
-        const { q } = req.query;
+        const { q, category } = req.query;
         if (!q) {
             return res.status(400).json({ error: 'Query parameter "q" is required' });
         }
 
-        console.log(`📡 External API received search request for: "${q}"`);
+        console.log(chalk.green(`\nNew web search request: "${q}" (Category: ${category})`));
         console.log(`🔗 Forwarding to Custom Search API...`);
 
         // Call Custom Search API
-        const response = await axios.get('https://search-api-backend-7uw8.onrender.com/api/search', {
-            params: { q }
+        // Use environment variable or default to localhost, avoids hardcoded IP issues
+        const scrapperUrl = process.env.SCRAPPER_URL || 'https://search-api-backend-7uw8.onrender.com/api/search';
+        console.log(`🔗 Calling Scrapper at: ${scrapperUrl}`);
+
+        const response = await axios.get(scrapperUrl, {
+            params: { q, category }
         });
 
+        console.log(`✅ Scrapper responded with status: ${response.status}`);
         const externalData = response.data;
         const externalResults = externalData.results || [];
+        console.log(`🔍 External Data Received: ${externalResults.length} items`);
+        console.log(`🗂️  Result breakdown:`, externalData.counts || 'No counts provided');
 
         console.log(`✅ Custom API returned ${externalResults.length} results`);
 
@@ -2909,12 +3206,12 @@ app.get('/api/search', async (req, res) => {
 
             return {
                 title: item.title,
-                price: price,
-                source: item.source, // 'Amazon', 'eBay', 'Jiji', 'Jumia'
+                price: item.price, // Keep original string with currency symbols for searchAllSources
+                source: item.source,
                 link: item.link,
-                thumbnail: item.img, // Map 'img' to 'thumbnail'
+                thumbnail: item.img,
                 rating: item.rating || 'N/A',
-                reviews: 'N/A' // Not provided by external API currently
+                reviews: 'N/A'
             };
         });
 
@@ -3085,22 +3382,17 @@ app.post('/api/execute-search-stream', async (req, res) => {
             console.error("Local search stream error", err);
         }
 
-        // Notify frontend about local search status for Search Party Popup
-        if (localDealsCount === 0) {
-            sendEvent('local-status', {
-                found: localDealsCount,
-                userHasPhone: !!(user && user.phoneNumber)
-            });
-        }
+        // Note: We'll check local-status AFTER all searches complete (see before 'done' event)
+
+        // Detect category with AI
+        const aiCategory = await detectCategoryWithAI(searchQuery);
+        console.log(`🧠 AI determined category for "${searchQuery}": ${aiCategory}`);
 
         // --- EXTERNAL SEARCH ---
-        // We reuse searchAllSources logical parts but maybe broken down if possible? 
-        // searchAllSources does local + axios call. We already did local.
-        // Let's just do the external part here manually to control flow.
 
         const externalApiUrl = `http://localhost:${process.env.PORT || 5000}/api/search`;
         try {
-            const apiResponse = await axios.get(externalApiUrl, { params: { q: searchQuery } });
+            const apiResponse = await axios.get(externalApiUrl, { params: { q: searchQuery, category: aiCategory } });
             const apiResults = apiResponse.data?.results || [];
 
             // Process these results (price conversion, affiliate links, etc.)
@@ -3110,7 +3402,7 @@ app.post('/api/execute-search-stream', async (req, res) => {
 
             // Note: findBestDeals filters and does affiliate links.
             // We might want to use it
-            const processedExternal = await findBestDeals(wrappedResults, searchQuery, userId, session);
+            const processedExternal = await findBestDeals(wrappedResults, searchQuery, userId, session, aiCategory);
 
             if (processedExternal.deals && processedExternal.deals.length > 0) {
                 sendEvent('deals', processedExternal.deals);
@@ -3146,6 +3438,24 @@ app.post('/api/execute-search-stream', async (req, res) => {
                     }
                 }
             } catch (e) { console.error("Error updating conversation", e); }
+        }
+
+
+        // Check if we have any results from local Nigerian stores (slot, jumia, jiji, konga)
+        const localStoreDeals = allDeals.filter(deal => {
+            const source = deal.source?.toLowerCase() || '';
+            return source.includes('slot') || source.includes('jumia') ||
+                source.includes('jiji') || source.includes('konga') ||
+                source.includes('ajebo');
+        });
+
+        // Only send local-status if no local store results found
+        // This triggers the Search Party modal AFTER all searches are complete
+        if (localStoreDeals.length === 0) {
+            sendEvent('local-status', {
+                found: localStoreDeals.length,
+                userHasPhone: !!(user && user.phoneNumber)
+            });
         }
 
         // Send Done

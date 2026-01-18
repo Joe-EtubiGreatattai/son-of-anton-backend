@@ -2,7 +2,7 @@ const axios = require('axios');
 const chalk = require('chalk');
 
 const SCRAPPER_URL = 'https://search-api-backend-7uw8.onrender.com/api/search';
-const BACKEND_URL = 'https://son-of-anton-backend-1n0j.onrender.com/api/search';
+const BACKEND_URL = 'http://192.168.1.165:3000/api/search';
 
 // Use a simple query to ensure we get results if it's working
 const QUERY = 'iphone 12';

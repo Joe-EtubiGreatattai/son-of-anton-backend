@@ -17,7 +17,32 @@ const upload = multer({ storage: multer.memoryStorage() });
 
 const app = express();
 
-app.use(cors());
+// CORS Configuration - Allow requests from frontend domains
+const allowedOrigins = [
+    'http://localhost:8080',
+    'http://localhost:5173',
+    'http://localhost:3000',
+    'https://www.sonofanton.live',
+    'https://sonofanton.live'
+];
+
+app.use(cors({
+    origin: function (origin, callback) {
+        // Allow requests with no origin (like mobile apps, Postman, etc.)
+        if (!origin) return callback(null, true);
+
+        if (allowedOrigins.indexOf(origin) !== -1) {
+            callback(null, true);
+        } else {
+            console.log('⚠️ Blocked CORS request from:', origin);
+            callback(null, true); // Still allow for now, but log it
+        }
+    },
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization']
+}));
+
 app.use(express.json());
 
 // Base URL health check

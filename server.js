@@ -3324,7 +3324,8 @@ app.post('/api/execute-search-stream', async (req, res) => {
     let allDeals = [];
 
     try {
-        console.log(`🔍 Stream Searching for: "${searchQuery}"`);
+        const country = user?.preferences?.country || 'NG';
+        console.log(`🔍 Stream Searching for: "${searchQuery}" in ${country}`);
 
         // 1. Check Cache First (if you want fast response, but maybe skip for streaming demo?)
         // Let's check cache. If hit, we can just stream it all at once.

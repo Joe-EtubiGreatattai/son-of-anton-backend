@@ -10,6 +10,7 @@ const jwt = require('jsonwebtoken');
 const multer = require('multer');
 const fs = require('fs');
 const whatsappService = require('./services/whatsapp');
+const aiService = require('./services/ai');
 
 // Configure Multer for memory storage (direct upload to Gemini)
 const upload = multer({ storage: multer.memoryStorage() });
@@ -32,9 +33,7 @@ const JWT_SECRET = process.env.JWT_SECRET || 'your_jwt_secret';
 // Base URL for SerpAPI - REMOVED
 // const SERP_BASE_URL = 'https://serpapi.com/search';
 
-// Gemini configuration
-const GEMINI_MODEL = 'models/gemini-2.5-pro'; // stable, supports generateContent
-const GEMINI_URL = `https://generativelanguage.googleapis.com/v1/${GEMINI_MODEL}:generateContent`;
+// Gemini configuration moved to aiService
 
 
 
@@ -1564,236 +1563,9 @@ async function setCachedSearch(query, data) {
 
 
 
-// Build user preferences prompt for AI
-function buildUserPreferencesPrompt(user) {
-    if (!user || !user.preferences) return '';
+// Product search and AI helper functions moved to aiService
 
-    const pref = user.preferences;
-
-    let prompt = '\n\nUser preferences:\n';
-
-    if (pref.budget) {
-        prompt += `- Budget preference: around $${pref.budget}.\n`;
-    }
-
-    if (pref.favoriteStores && pref.favoriteStores.length) {
-        prompt += `- Favorite stores: ${pref.favoriteStores.join(', ')}.\n`;
-    }
-
-    if (pref.dislikedStores && pref.dislikedStores.length) {
-        prompt += `- Stores they avoid: ${pref.dislikedStores.join(', ')}.\n`;
-    }
-
-    if (pref.categories && pref.categories.length) {
-        prompt += `- They are interested in: ${pref.categories.join(', ')}.\n`;
-    }
-
-    if (pref.shoppingStyle) {
-        prompt += `- Shopping style: ${pref.shoppingStyle}.\n`;
-    }
-
-    return prompt;
-}
-
-// Build search preferences prompt for AI
-function buildSearchPreferencesPrompt(user) {
-    if (!user || !user.searchPreferences) return '';
-
-    const sp = user.searchPreferences;
-    let prompt = '\n\nSearch preferences:\n';
-
-    if (sp.minPrice !== undefined && sp.minPrice !== null) {
-        prompt += `- Minimum price: $${sp.minPrice}.\n`;
-    }
-
-    if (sp.maxPrice !== undefined && sp.maxPrice !== null) {
-        prompt += `- Maximum price: $${sp.maxPrice}.\n`;
-    }
-
-    if (sp.preferredStores && sp.preferredStores.length) {
-        prompt += `- Preferred stores: ${sp.preferredStores.join(', ')}.\n`;
-    }
-
-    if (sp.avoidStores && sp.avoidStores.length) {
-        prompt += `- Avoid stores: ${sp.avoidStores.join(', ')}.\n`;
-    }
-
-    prompt += `- Quick search mode: ${sp.quickSearchMode ? 'Enabled' : 'Disabled'}.\n`;
-    prompt += `- Result limit: ${sp.resultLimit}.\n`;
-
-    return prompt;
-}
-
-// Generate AI prompt
-function generateAIPrompt(userMessage, searchQuery, user, messageHistory) {
-    const basePrompt = `
-You are **Son of Anton**, an upbeat, friendly, and highly efficient AI shopping assistant.
-Your job is to help the user find exactly what they want to buy, with a focus on finding the best deals and explaining *why* a product is a good choice.
-
-**Your Personality:**
-- Name: Son of Anton
-- Tone: Upbeat, energetic, helpful, and slightly witty.
-- Style: You love emojis 🛍️✨ and use them to make chats feel alive. You are never boring or robotic.
-- Goal: To be the ultimate shopping companion. You take pride in finding hidden gems and great prices.
-
-DECISION LOGIC:
-1. Is the user asking for a product, deal, or shopping advice? -> TRIGGER SEARCH.
-2. Is the user just saying hello, asking how you are, or chatting casually? -> DO NOT SEARCH.
-
-RESPONSE FORMAT (If Shopping):
-1) Brief conversational response (1-2 sentences max).
-2) IMMEDIATELY add a new line starting with: SEARCH: <product query>
-3) IMMEDIATELY add a new line starting with: CATEGORY: <category> (Choose from: gadget, fashion, food, decor, beauty, auto, other)
-
-RESPONSE FORMAT (If Casual Chat):
-1) Just respond conversationally.
-2) Do NOT include "SEARCH:" or "CATEGORY:".
-
-SEARCH FORMAT:
-- SEARCH: simple product keywords
-- Be concise (2-5 words)
-- CATEGORY: Choose the best fit from: gadget, fashion, food, decor, beauty, auto, other.
-
-CATEGORIZATION RULES:
-- gadget: Phones, laptops, electronics, appliances, accessories.
-- fashion: Clothes, shoes, bags, jewelry, sneakers, watches (if luxury/style).
-- food: Groceries, snacks, drinks.
-- decor: Furniture, home items, rugs.
-- beauty: Skincare, makeup, perfume.
-- auto: Car parts, accessories.
-- other: Anything else.
-
-EXAMPLES:
-User: "help me find a rolex"
-Response: I'll find the best Rolex watches for you!
-SEARCH: rolex watches
-CATEGORY: fashion
-
-User: "I need new sneakers"
-Response: Let me search for some cool sneakers for you! 👟
-SEARCH: popular sneakers
-CATEGORY: fashion
-
-User: "iphone 13 pro"
-Response: I'll check the best prices for iPhone 13 Pro!
-SEARCH: iphone 13 pro
-CATEGORY: gadget
-
-User: "I want a blender"
-Response: I'll find some high-quality blenders for you!
-SEARCH: kitchen blender
-CATEGORY: gadget
-
-IMPORTANT RULES:
-- ALWAYS include CATEGORY: if you include SEARCH:.
-- If user mentions sneakers, dresses, or shirts, use CATEGORY: fashion.
-- If user mentions phones, laptops, or electronics, use CATEGORY: gadget.
-`;
-
-    const userPrefPrompt = buildUserPreferencesPrompt(user);
-    const searchPrefPrompt = buildSearchPreferencesPrompt(user);
-
-    const historyText = (messageHistory || [])
-        .map((msg) => `${msg.role === 'user' ? 'User' : 'Assistant'}: ${msg.content}`)
-        .join('\n');
-
-    const finalPrompt = `
-${basePrompt}
-
-User context:
-${userPrefPrompt}
-${searchPrefPrompt}
-
-Conversation history:
-${historyText}
-
-Current user message:
-User: ${userMessage}
-
-Remember: Only use "SEARCH: <query>" if the user is actually looking for a product.
-`;
-
-    return finalPrompt;
-}
-
-// Call Google Gemini API
-async function callGeminiAPI(prompt, imageBuffer = null, mimeType = null) {
-    try {
-        const parts = [{ text: prompt }];
-
-        if (imageBuffer && mimeType) {
-            parts.push({
-                inlineData: {
-                    mimeType: mimeType,
-                    data: imageBuffer.toString('base64')
-                }
-            });
-        }
-
-        const response = await axios.post(
-            `${GEMINI_URL}?key=${GOOGLE_API_KEY}`,
-            {
-                contents: [
-                    {
-                        parts: parts,
-                    },
-                ],
-            },
-            {
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-            }
-        );
-
-        const candidates = response.data?.candidates;
-        if (!candidates || candidates.length === 0) {
-            throw new Error('No candidates returned from Gemini');
-        }
-
-        const content = candidates[0]?.content?.parts?.[0]?.text || 'Sorry, I could not generate a response.';
-        return content;
-    } catch (error) {
-        console.error('Gemini API Error:', error.response?.data || error.message);
-        throw new Error('Failed to generate a response from Gemini');
-    }
-}
-
-// Function to detect category using AI
-async function detectCategoryWithAI(query) {
-    try {
-        console.log(`🤖 Asking AI to categorize: "${query}"`);
-        const prompt = `Classify this shopping query into exactly one of these categories: gadget, fashion, food, decor, beauty, auto, other.
-Current Query: "${query}"
-
-Return ONLY the category name. No other text.`;
-
-        const response = await callGeminiAPI(prompt);
-        const category = response.toLowerCase().trim().replace(/[^\w]/g, '');
-
-        const validCategories = ['gadget', 'fashion', 'food', 'decor', 'beauty', 'auto', 'other'];
-        if (validCategories.includes(category)) {
-            return category;
-        }
-
-        // Contextual fallback
-        if (category.includes('gadget') || category.includes('tech') || category.includes('electronic')) return 'gadget';
-        if (category.includes('fashion') || category.includes('cloth') || category.includes('wear') || category.includes('shoe')) return 'fashion';
-
-        return 'other';
-    } catch (e) {
-        console.error('AI Category detection failed:', e.message);
-        return 'other';
-    }
-}
-
-// Format AI Display Message
-function formatDisplayMessage(message) {
-    if (!message || message.trim() === '') {
-        return "Let me search for that! 🔍";
-    }
-    return message;
-}
+// Product search and AI helper functions moved to aiService
 
 // Search function (SerpAPI / Google Shopping)
 async function searchItem(itemName, country = 'US') {
@@ -2293,7 +2065,7 @@ async function getAIRecommendation(deals, searchQuery, user) {
         `${index + 1}. ${deal.title} - ${deal.price.toFixed(2)} ${deal.source ? `from ${deal.source}` : ''}${deal.rating && deal.rating !== 'N/A' ? ` (Rating: ${deal.rating}, ${deal.reviews} reviews)` : ''}`
     ).join('\n');
 
-    const userContext = user ? `\n\nYou're making this recommendation for ${user.username || user.email}. Consider their preferences:\n${buildUserPreferencesPrompt(user)}\n${buildSearchPreferencesPrompt(user)}` : '';
+    const userContext = user ? `\n\nYou're making this recommendation for ${user.username || user.email}. Consider their preferences:\n${aiService.buildUserPreferencesPrompt(user)}\n${aiService.buildSearchPreferencesPrompt(user)}` : '';
 
     const prompt = `
 You are a shopping assistant AI. The user searched for: "${searchQuery}"
@@ -2313,7 +2085,7 @@ TASK: Recommend the best option in 2-3 SHORT sentences.
 
 
     try {
-        const aiResponse = await callGeminiAPI(prompt);
+        const aiResponse = await aiService.callGeminiAPI(prompt);
         return aiResponse;
     } catch (error) {
         console.error('AI recommendation error:', error);
@@ -2492,7 +2264,7 @@ app.post('/api/chat/vision', upload.single('image'), authenticateToken, async (r
         }
         Do not include markdown formatting (like \`\`\`json). Just the raw JSON string.`;
 
-        const analysisResponse = await callGeminiAPI(prompt, req.file.buffer, req.file.mimetype);
+        const analysisResponse = await aiService.callGeminiAPI(prompt, req.file.buffer, req.file.mimetype);
 
         let analysis;
         try {
@@ -2528,7 +2300,7 @@ app.post('/api/chat/vision', upload.single('image'), authenticateToken, async (r
         Keep it to 2-3 sentences. Friendly tone.
         DO NOT say "Here is a message" or "I would say". Just say the message directly.`;
 
-        const aiMessage = await callGeminiAPI(summaryPrompt);
+        const aiMessage = await aiService.callGeminiAPI(summaryPrompt);
 
         // 4. Save to Database (Create a "User Message" that represents the image upload)
         // We'll rely on the frontend to display the uploaded image, handling the "User" side of the UI.
@@ -2613,9 +2385,9 @@ app.post('/api/chat', async (req, res) => {
 
         sessionHistory.push({ role: 'user', content: message });
 
-        const aiPrompt = generateAIPrompt(message, searchQuery, user, sessionHistory);
+        const aiPrompt = aiService.generateAIPrompt(message, searchQuery, user, sessionHistory);
 
-        let aiResponse = await callGeminiAPI(aiPrompt);
+        let aiResponse = await aiService.callGeminiAPI(aiPrompt);
 
         let extractedSearchQuery = searchQuery;
         let extractedCategory = 'other';
@@ -2657,7 +2429,7 @@ app.post('/api/chat', async (req, res) => {
             // Don't fail the request if database save fails
         }
 
-        const displayMessage = formatDisplayMessage(aiResponse);
+        const displayMessage = aiService.formatDisplayMessage(aiResponse);
 
         res.json({
             aiResponse: displayMessage,
@@ -2694,9 +2466,9 @@ app.post('/api/search', async (req, res) => {
 
         const session = generateSessionId(req);
 
-        const aiPrompt = generateAIPrompt(message, searchQuery, user, []);
+        const aiPrompt = aiService.generateAIPrompt(message, searchQuery, user, []);
 
-        let aiResponse = await callGeminiAPI(aiPrompt);
+        let aiResponse = await aiService.callGeminiAPI(aiPrompt);
 
         let shouldSearch = aiResponse.includes('SEARCH:');
 
@@ -2750,7 +2522,7 @@ app.post('/api/search', async (req, res) => {
             }
         }
 
-        const displayMessage = formatDisplayMessage(aiResponse);
+        const displayMessage = aiService.formatDisplayMessage(aiResponse);
 
         // Debug: Log deals to verify link field is included
         if (deals && deals.length > 0) {
@@ -2827,8 +2599,8 @@ app.post('/api/shopping-search', async (req, res) => {
         let displayMessage = null;
 
         if (aiEnabled && userMessage) {
-            const aiPrompt = generateAIPrompt(userMessage, searchQuery, user, []);
-            aiResponse = await callGeminiAPI(aiPrompt);
+            const aiPrompt = aiService.generateAIPrompt(userMessage, searchQuery, user, []);
+            aiResponse = await aiService.callGeminiAPI(aiPrompt);
 
             let shouldSearch = false;
             let extractedSearchQuery = searchQuery;
@@ -2861,7 +2633,7 @@ app.post('/api/shopping-search', async (req, res) => {
             }
 
             return res.json({
-                aiResponse: formatDisplayMessage(displayMessage || aiResponse),
+                aiResponse: aiService.formatDisplayMessage(displayMessage || aiResponse),
                 deals,
                 totalValid,
                 aiDealSummary
@@ -2878,7 +2650,7 @@ app.post('/api/shopping-search', async (req, res) => {
             }
 
             return res.json({
-                aiResponse: formatDisplayMessage(displayMessage),
+                aiResponse: aiService.formatDisplayMessage(displayMessage),
                 deals,
                 totalValid,
                 aiDealSummary
@@ -3378,7 +3150,7 @@ app.post('/api/execute-search-stream', authenticateToken, async (req, res) => {
         // Note: We'll check local-status AFTER all searches complete (see before 'done' event)
 
         // Detect category with AI
-        const aiCategory = await detectCategoryWithAI(searchQuery);
+        const aiCategory = await aiService.detectCategoryWithAI(searchQuery);
         console.log(`🧠 AI determined category for "${searchQuery}": ${aiCategory}`);
 
         // --- EXTERNAL SEARCH ---
@@ -3508,8 +3280,21 @@ app.post('/api/whatsapp/send', authenticateToken, async (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
     // Initialize WhatsApp service
     whatsappService.initialize();
 });
+
+// Handle graceful shutdown
+const gracefulShutdown = async () => {
+    console.log('🛑 Graceful shutdown initiated...');
+    await whatsappService.destroy();
+    server.close(() => {
+        console.log('👋 Server closed.');
+        process.exit(0);
+    });
+};
+
+process.on('SIGINT', gracefulShutdown);
+process.on('SIGTERM', gracefulShutdown);

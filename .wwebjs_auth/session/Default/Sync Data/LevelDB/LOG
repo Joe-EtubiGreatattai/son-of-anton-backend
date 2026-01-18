@@ -1,2 +1,3 @@
-2026/01/18-22:12:44.946 2b2ba2 Creating DB /Users/mac/Documents/shoppingBot/backend/.wwebjs_auth/session/Default/Sync Data/LevelDB since it was missing.
-2026/01/18-22:12:44.956 2b2ba2 Reusing MANIFEST /Users/mac/Documents/shoppingBot/backend/.wwebjs_auth/session/Default/Sync Data/LevelDB/MANIFEST-000001
+2026/01/18-22:46:32.885 2bf608 Reusing MANIFEST /Users/mac/Documents/shoppingBot/backend/.wwebjs_auth/session/Default/Sync Data/LevelDB/MANIFEST-000001
+2026/01/18-22:46:32.886 2bf608 Recovering log #3
+2026/01/18-22:46:32.887 2bf608 Reusing old log /Users/mac/Documents/shoppingBot/backend/.wwebjs_auth/session/Default/Sync Data/LevelDB/000003.log 

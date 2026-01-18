@@ -536,119 +536,18 @@ async function searchLocalProducts(searchQuery) {
     }
 }
 
-// Unified search: Nigerian platforms (Jumia, Konga) + Amazon + Google Shopping
-// Unified search: Nigerian platforms (Jumia, Konga) + Amazon + Google Shopping
-async function searchAllSources(searchQuery, user = null, category = 'other') {
-    // Default to Nigeria for all searches
-    const country = user?.preferences?.country || 'NG';
+// Helper to prioritize Jumia and interleave other Nigerian results
+async function prioritizeResults(allResults, country = 'NG') {
+    if (!allResults || allResults.length === 0) return [];
 
-    console.log(`🌍 Searching with country preference: ${country}`);
-
-    // Call Local Search and New External Search API in parallel
-    const externalApiUrl = `http://localhost:${process.env.PORT || 3000}/api/search`;
-    console.log(`🌐 Calling External Search API at: ${externalApiUrl}`);
-
-    const [localProducts, apiData] = await Promise.all([
-        searchLocalProducts(searchQuery).catch(err => {
-            console.error('Local search error:', err.message);
-            return [];
-        }),
-        axios.get(externalApiUrl, {
-            params: { q: searchQuery, category: category || 'other' }
-        }).then(res => res.data).catch(err => {
-            console.error(`External Search API error for ${externalApiUrl}:`, err.message);
-            if (err.response) {
-                console.error('External API Response Status:', err.response.status);
-                console.error('External API Response Data:', err.response.data);
-            }
-            return { results: [] };
-        })
-    ]);
-
-    const apiResults = apiData?.results || [];
-    console.log(`📊 External API returned ${apiResults.length} results`);
-
-    const nigerianResults = [];
-    const foreignResults = [];
-
-    // Process Local Results
-    console.log(`📦 Found ${localProducts.length} local database products`);
-    for (const p of localProducts) {
-        nigerianResults.push({ ...p, isNigerian: true });
-    }
-
-    // Helper to parse price string
-    const parsePrice = (str) => {
-        if (typeof str === 'number') return { val: str, cur: 'USD' };
-        if (!str) return { val: 0, cur: 'USD' };
-
-        let cur = 'USD';
-        if (str.includes('EUR') || str.includes('€')) cur = 'EUR';
-        if (str.includes('NGN') || str.includes('₦')) cur = 'NGN';
-        if (str.includes('GBP') || str.includes('£')) cur = 'GBP';
-
-        // Remove currency symbols and non-numeric characters (except dot)
-        const numStr = str.replace(/[^0-9.]/g, '');
-        const val = parseFloat(numStr) || 0;
-
-        return { val, cur };
-    };
-
-    // Process API Results
-    console.log(`🔍 Backend received ${apiResults?.length || 0} raw results from scrapper.`);
-    if (apiResults && apiResults.length > 0) {
-        const rawSources = apiResults.map(r => r.source);
-        console.log(`   📍 Raw sources in scrapper response: ${Array.from(new Set(rawSources)).join(', ')}`);
-    }
-
-    for (const item of apiResults) {
-        const { val, cur: detectedCur } = parsePrice(item.price);
-
-        // Determine if Nigerian source
-        const isNigerianSource = ['Jumia', 'Jiji', 'Konga', 'Slot', 'Ajebo', 'DexStitches'].some(s => item.source && item.source.includes(s));
-
-        // If it's a Nigerian source and no currency was detected (or defaulting to USD), assume NGN
-        const cur = (isNigerianSource && (!item.price || (!item.price.includes('$') && !item.price.includes('€') && !item.price.includes('£')))) ? 'NGN' : detectedCur;
-
-        let finalPrice = val;
-
-        // Convert foreign currency to NGN for Nigerian users
-        if (country === 'NG' && cur !== 'NGN' && convertToNGN) {
-            finalPrice = await convertToNGN(val, cur);
-        }
-
-        const mappedItem = {
-            price: finalPrice,
-            thumbnail: item.thumbnail || item.img,
-            link: item.link,
-            source: item.source,
-            title: item.title,
-            rating: item.rating,
-            reviews: 'N/A',
-            isNigerian: isNigerianSource,
-            originalPrice: val,
-            originalCurrency: cur
-        };
-
-        if (isNigerianSource) {
-            nigerianResults.push({ ...mappedItem, isNigerian: true });
-        } else {
-            foreignResults.push(mappedItem);
-        }
-    }
-
-    console.log(`📊 Processing complete. Nigerian: ${nigerianResults.length}, Foreign: ${foreignResults.length}`);
-
-    // Debug: log sources of nigerian results
-    const sources = nigerianResults.map(r => r.source);
-    console.log(`📍 Nigerian sources found: ${Array.from(new Set(sources)).join(', ')}`);
+    const nigerianResults = allResults.filter(r => r.isNigerian);
+    const foreignResults = allResults.filter(r => !r.isNigerian);
 
     // For non-Nigerian users, return all results combined
     if (country !== 'NG') {
-        return { shopping_results: [...foreignResults, ...nigerianResults] };
+        return [...foreignResults, ...nigerianResults];
     }
 
-    // Interleave Nigerian sources for variety before blending
     const jumiaResults = nigerianResults.filter(r => r.source && r.source.toLowerCase().includes('jumia'));
     const kongaResults = nigerianResults.filter(r => r.source && r.source.toLowerCase().includes('konga'));
     const ajeboResults = nigerianResults.filter(r => r.source && r.source.toLowerCase().includes('ajebo'));
@@ -686,6 +585,79 @@ async function searchAllSources(searchQuery, user = null, category = 'other') {
         }
     }
 
+    return blendedResults;
+}
+
+// Unified search: Nigerian platforms (Jumia, Konga) + Amazon + Google Shopping
+async function searchAllSources(searchQuery, user = null, category = 'other') {
+    // Default to Nigeria for all searches
+    const country = user?.preferences?.country || 'NG';
+
+    console.log(`🌍 Searching with country preference: ${country}`);
+
+    // Call Local Search and New External Search API in parallel
+    const externalApiUrl = `http://localhost:${process.env.PORT || 3000}/api/search`;
+    console.log(`🌐 Calling External Search API at: ${externalApiUrl}`);
+
+    const [localProducts, apiData] = await Promise.all([
+        searchLocalProducts(searchQuery).catch(err => {
+            console.error('Local search error:', err.message);
+            return [];
+        }),
+        axios.get(externalApiUrl, {
+            params: { q: searchQuery, category: category || 'other' }
+        }).then(res => res.data).catch(err => {
+            console.error(`External Search API error for ${externalApiUrl}:`, err.message);
+            return { results: [] };
+        })
+    ]);
+
+    const apiResults = apiData?.results || [];
+    const processedResults = [];
+
+    // Process Local Results
+    for (const p of localProducts) {
+        processedResults.push({ ...p, isNigerian: true });
+    }
+
+    // Helper to parse price string
+    const parsePrice = (str) => {
+        if (typeof str === 'number') return { val: str, cur: 'USD' };
+        if (!str) return { val: 0, cur: 'USD' };
+        let cur = 'USD';
+        if (str.includes('EUR') || str.includes('€')) cur = 'EUR';
+        if (str.includes('NGN') || str.includes('₦')) cur = 'NGN';
+        if (str.includes('GBP') || str.includes('£')) cur = 'GBP';
+        const numStr = str.replace(/[^0-9.]/g, '');
+        const val = parseFloat(numStr) || 0;
+        return { val, cur };
+    };
+
+    for (const item of apiResults) {
+        const { val, cur: detectedCur } = parsePrice(item.price);
+        const isNigerianSource = ['Jumia', 'Jiji', 'Konga', 'Slot', 'Ajebo', 'DexStitches'].some(s => item.source && item.source.includes(s));
+        const cur = (isNigerianSource && (!item.price || (!item.price.includes('$') && !item.price.includes('€') && !item.price.includes('£')))) ? 'NGN' : detectedCur;
+
+        let finalPrice = val;
+        if (country === 'NG' && cur !== 'NGN' && typeof convertToNGN === 'function') {
+            finalPrice = await convertToNGN(val, cur);
+        }
+
+        processedResults.push({
+            price: finalPrice,
+            thumbnail: item.thumbnail || item.img,
+            link: item.link,
+            source: item.source,
+            title: item.title,
+            rating: item.rating,
+            reviews: 'N/A',
+            isNigerian: isNigerianSource,
+            originalPrice: val,
+            originalCurrency: cur
+        });
+    }
+
+    const blendedResults = await prioritizeResults(processedResults, country);
     return { shopping_results: blendedResults };
 }
 
@@ -3213,28 +3185,22 @@ app.get('/api/search', async (req, res) => {
         console.log(`✅ Custom API returned ${externalResults.length} results`);
 
         // Map results to internal format
-        const mappedResults = externalResults.map(item => {
-            // Parse price string (e.g. "$582.99" -> 582.99)
-            let price = 0;
-            if (item.price) {
-                const priceMatch = item.price.toString().match(/[\d,.]+/);
-                price = priceMatch ? parseFloat(priceMatch[0].replace(/,/g, '')) : 0;
-            }
+        const mappedResults = externalResults.map(item => ({
+            title: item.title,
+            price: item.price,
+            source: item.source,
+            link: item.link,
+            thumbnail: item.img || item.thumbnail,
+            rating: item.rating || 'N/A',
+            reviews: 'N/A',
+            isNigerian: ['Jumia', 'Jiji', 'Konga', 'Slot', 'Ajebo', 'DexStitches'].some(s => item.source && item.source.includes(s))
+        }));
 
-            return {
-                title: item.title,
-                price: item.price, // Keep original string with currency symbols for searchAllSources
-                source: item.source,
-                link: item.link,
-                thumbnail: item.img,
-                rating: item.rating || 'N/A',
-                reviews: 'N/A'
-            };
-        });
+        const prioritized = await prioritizeResults(mappedResults);
 
         res.json({
-            results: mappedResults,
-            count: mappedResults.length,
+            results: prioritized,
+            count: prioritized.length,
             meta: externalData.counts || {}
         });
 
@@ -3421,8 +3387,10 @@ app.post('/api/execute-search-stream', async (req, res) => {
             const processedExternal = await findBestDeals(wrappedResults, searchQuery, userId, session, aiCategory);
 
             if (processedExternal.deals && processedExternal.deals.length > 0) {
-                sendEvent('deals', processedExternal.deals);
-                allDeals.push(...processedExternal.deals);
+                // Apply global prioritization (Jumia first) to this batch
+                const prioritizedBatch = await prioritizeResults(processedExternal.deals, country);
+                sendEvent('deals', prioritizedBatch);
+                allDeals.push(...prioritizedBatch);
             }
 
         } catch (err) {

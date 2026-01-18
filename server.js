@@ -2216,6 +2216,9 @@ async function findBestDeals(results, searchQuery = '', userId = null, sessionId
     const amazonResults = resultsWithValidLinks.filter((d) =>
         d.source && d.source.toLowerCase().includes('amazon')
     );
+    const jumiaResults = resultsWithValidLinks.filter((d) =>
+        d.source && d.source.toLowerCase().includes('jumia')
+    );
     const slotResults = resultsWithValidLinks.filter((d) =>
         d.source && d.source.toLowerCase().includes('slot')
     );
@@ -2234,6 +2237,7 @@ async function findBestDeals(results, searchQuery = '', userId = null, sessionId
     const otherResults = resultsWithValidLinks.filter(
         (d) => !d.source ||
             (!d.source.toLowerCase().includes('amazon') &&
+                !d.source.toLowerCase().includes('jumia') &&
                 !d.source.toLowerCase().includes('slot') &&
                 !d.source.toLowerCase().includes('konga') &&
                 !d.source.toLowerCase().includes('jiji') &&
@@ -2242,6 +2246,7 @@ async function findBestDeals(results, searchQuery = '', userId = null, sessionId
     );
 
     amazonResults.sort((a, b) => a.price - b.price);
+    jumiaResults.sort((a, b) => a.price - b.price);
     slotResults.sort((a, b) => a.price - b.price);
     kongaResults.sort((a, b) => a.price - b.price);
     jijiResults.sort((a, b) => a.price - b.price);
@@ -2261,24 +2266,22 @@ async function findBestDeals(results, searchQuery = '', userId = null, sessionId
         return result;
     };
 
-    // Prioritization logic:
-    // - Gadgets: Slot.ng, then Amazon, then others
-    // - Others: Amazon, then local interleaved
+    // Prioritization logic: Jumia ALWAYS first.
+    // - Gadgets: Jumia, then Slot.ng, then Amazon, then others
+    // - Others: Jumia, then Amazon, then local interleaved
     let orderedResults;
     if (isGadgetQuery) {
-        // Gadgets: Prioritize Slot, then Amazon, then others interleaved
-        // Note: Slot is EXCLUDED from localInterleaved here because we handle it explicitly first
+        // Gadgets: Prioritize Jumia, then Slot, then Amazon, then others interleaved
         const localInterleaved = interleave(kongaResults, jijiResults, ajeboResults, dexStitchesResults, otherResults);
-        orderedResults = [...slotResults, ...amazonResults, ...localInterleaved];
+        orderedResults = [...jumiaResults, ...slotResults, ...amazonResults, ...localInterleaved];
     } else {
-        // Non-gadgets: Amazon first, then typical local mix (Slot included in mix if present)
-        // Note: Slot is INCLUDED in localInterleaved here
+        // Non-gadgets: Jumia first, then Amazon, then typical local mix
         const localInterleaved = interleave(kongaResults, ajeboResults, dexStitchesResults, jijiResults, slotResults, otherResults);
-        orderedResults = [...amazonResults, ...localInterleaved];
+        orderedResults = [...jumiaResults, ...amazonResults, ...localInterleaved];
     }
 
     return {
-        deals: orderedResults.slice(0, 10),
+        deals: orderedResults.slice(0, 15), // Show more top deals
         totalValid: resultsWithValidLinks.length
     };
 }

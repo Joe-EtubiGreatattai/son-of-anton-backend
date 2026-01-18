@@ -2538,9 +2538,9 @@ app.post('/api/chat/vision', upload.single('image'), authenticateToken, async (r
             try {
                 // Find or create conversation
                 let conversation = await Conversation.findOne({ sessionId });
-                if (!conversation) {
+                if (!conversation && userId) {
                     conversation = new Conversation({
-                        userId: userId || null,
+                        userId: userId,
                         sessionId: sessionId,
                         messages: []
                     });
@@ -2563,7 +2563,9 @@ app.post('/api/chat/vision', upload.single('image'), authenticateToken, async (r
                     searchQuery: analysis.searchQuery
                 });
 
-                await conversation.save();
+                if (conversation && conversation.userId) {
+                    await conversation.save();
+                }
             } catch (dbError) {
                 console.error('Error saving vision conversation:', dbError);
             }
@@ -2976,7 +2978,7 @@ function startScheduler() {
 
 
 // Execute search endpoint (called by frontend after chat determines intent)
-app.post('/api/execute-search', async (req, res) => {
+app.post('/api/execute-search', authenticateToken, async (req, res) => {
     try {
         const { searchQuery, category, sessionId: clientSessionId } = req.body;
         const userId = req.userId;
@@ -3116,8 +3118,12 @@ app.post('/api/execute-search', async (req, res) => {
                     // Update the message
                     Object.assign(conversation.messages[lastAssistantIndex], messageUpdate);
                     conversation.updatedAt = new Date();
-                    await conversation.save();
-                    console.log(`💾 Updated conversation with search results: ${session}`);
+
+                    // Only save if we have a userId to satisfy schema validation
+                    if (conversation.userId) {
+                        await conversation.save();
+                        console.log(`💾 Updated conversation with search results: ${session}`);
+                    }
                 }
             }
         } catch (dbError) {
@@ -3295,7 +3301,7 @@ app.delete('/api/vendor/products/:id', authenticateToken, async (req, res) => {
 
 
 // Execute search endpoint with STREAMING (Incremental Results)
-app.post('/api/execute-search-stream', async (req, res) => {
+app.post('/api/execute-search-stream', authenticateToken, async (req, res) => {
     const { searchQuery, sessionId: clientSessionId } = req.body;
     const userId = req.userId;
 
@@ -3423,7 +3429,12 @@ app.post('/api/execute-search-stream', async (req, res) => {
                             searchQuery: searchQuery
                         });
                         conversation.updatedAt = new Date();
-                        await conversation.save();
+
+                        // Only save if we have a userId to satisfy schema validation
+                        if (conversation.userId) {
+                            await conversation.save();
+                            console.log(`💾 Updated conversation with stream results: ${session}`);
+                        }
                     }
                 }
             } catch (e) { console.error("Error updating conversation", e); }

@@ -21,6 +21,7 @@ class WhatsAppService {
             }),
             puppeteer: {
                 handleSIGINT: false,
+                cacheDirectory: path.join(__dirname, '../.puppeteer_cache'),
                 args: [
                     '--no-sandbox',
                     '--disable-setuid-sandbox',

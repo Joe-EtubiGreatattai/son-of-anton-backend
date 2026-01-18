@@ -23,7 +23,8 @@ const allowedOrigins = [
     'http://localhost:5173',
     'http://localhost:3000',
     'https://www.sonofanton.live',
-    'https://sonofanton.live'
+    'https://sonofanton.live',
+    'https://sonofanton.live/'
 ];
 
 app.use(cors({

@@ -545,7 +545,7 @@ async function searchAllSources(searchQuery, user = null, category = 'other') {
     console.log(`🌍 Searching with country preference: ${country}`);
 
     // Call Local Search and New External Search API in parallel
-    const externalApiUrl = `http://localhost:${process.env.PORT || 5000}/api/search`;
+    const externalApiUrl = `http://localhost:${process.env.PORT || 3000}/api/search`;
     console.log(`🌐 Calling External Search API at: ${externalApiUrl}`);
 
     const [localProducts, apiData] = await Promise.all([
@@ -3195,8 +3195,8 @@ app.get('/api/search', async (req, res) => {
         console.log(`🔗 Forwarding to Custom Search API...`);
 
         // Call Custom Search API
-        // Use environment variable or default to localhost, avoids hardcoded IP issues
-        const scrapperUrl = process.env.SCRAPPER_URL || 'https://search-api-backend-7uw8.onrender.com/api/search';
+        // Use environment variable or default to new VPS, avoids hardcoded Render issues
+        const scrapperUrl = process.env.SCRAPPER_URL || 'http://46.175.147.124:3001/api/search';
         console.log(`🔗 Calling Scrapper at: ${scrapperUrl}`);
 
         const response = await axios.get(scrapperUrl, {
@@ -3405,7 +3405,7 @@ app.post('/api/execute-search-stream', async (req, res) => {
 
         // --- EXTERNAL SEARCH ---
 
-        const externalApiUrl = `http://localhost:${process.env.PORT || 5000}/api/search`;
+        const externalApiUrl = `http://localhost:${process.env.PORT || 3000}/api/search`;
         try {
             const apiResponse = await axios.get(externalApiUrl, { params: { q: searchQuery, category: aiCategory } });
             const apiResults = apiResponse.data?.results || [];

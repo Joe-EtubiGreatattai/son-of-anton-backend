@@ -9,6 +9,7 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const multer = require('multer');
 const fs = require('fs');
+const whatsappService = require('./services/whatsapp');
 
 // Configure Multer for memory storage (direct upload to Gemini)
 const upload = multer({ storage: multer.memoryStorage() });
@@ -3466,7 +3467,38 @@ app.post('/api/reset', (req, res) => {
     res.json({ success: true, message: 'Conversation reset successfully' });
 });
 
+// WhatsApp API Endpoints
+app.get('/api/whatsapp/qr', (req, res) => {
+    const qr = whatsappService.getQR();
+    if (qr) {
+        res.json({ qr });
+    } else {
+        res.status(404).json({ message: 'QR code not available. Client might be connected or initializing.' });
+    }
+});
+
+app.get('/api/whatsapp/status', (req, res) => {
+    res.json(whatsappService.getStatus());
+});
+
+app.post('/api/whatsapp/send', authenticateToken, async (req, res) => {
+    // Basic security for now: only allow admin or specific users if needed
+    const { phoneNumber, message } = req.body;
+    if (!phoneNumber || !message) {
+        return res.status(400).json({ error: 'Phone number and message are required' });
+    }
+
+    try {
+        await whatsappService.sendMessage(phoneNumber, message);
+        res.json({ success: true, message: 'WhatsApp message sent' });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
+    // Initialize WhatsApp service
+    whatsappService.initialize();
 });

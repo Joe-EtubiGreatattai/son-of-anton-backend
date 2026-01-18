@@ -649,12 +649,13 @@ async function searchAllSources(searchQuery, user = null, category = 'other') {
     }
 
     // Interleave Nigerian sources for variety before blending
+    const jumiaResults = nigerianResults.filter(r => r.source && r.source.toLowerCase().includes('jumia'));
     const kongaResults = nigerianResults.filter(r => r.source && r.source.toLowerCase().includes('konga'));
     const ajeboResults = nigerianResults.filter(r => r.source && r.source.toLowerCase().includes('ajebo'));
     const dexResults = nigerianResults.filter(r => r.source && r.source.toLowerCase().includes('dexstitches'));
     const jijiResults = nigerianResults.filter(r => r.source && r.source.toLowerCase().includes('jiji'));
     const slotResults = nigerianResults.filter(r => r.source && r.source.toLowerCase().includes('slot'));
-    const otherNGResults = nigerianResults.filter(r => !kongaResults.includes(r) && !ajeboResults.includes(r) && !dexResults.includes(r) && !jijiResults.includes(r) && !slotResults.includes(r));
+    const otherNGResults = nigerianResults.filter(r => !jumiaResults.includes(r) && !kongaResults.includes(r) && !ajeboResults.includes(r) && !dexResults.includes(r) && !jijiResults.includes(r) && !slotResults.includes(r));
 
     const interleavedNigerian = [];
     const maxNG = Math.max(kongaResults.length, ajeboResults.length, dexResults.length, jijiResults.length, slotResults.length, otherNGResults.length);
@@ -667,8 +668,8 @@ async function searchAllSources(searchQuery, user = null, category = 'other') {
         if (otherNGResults[i]) interleavedNigerian.push(otherNGResults[i]);
     }
 
-    // Blending Logic: 90% Nigerian (interleaved), 10% International
-    const blendedResults = [];
+    // Blending Logic: Jumia first, then 90% other Nigerian (interleaved), 10% International
+    const blendedResults = [...jumiaResults]; // Prioritize ALL Jumia results at the top
     let ngIndex = 0;
     let foreignIndex = 0;
 

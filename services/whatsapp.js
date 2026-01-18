@@ -63,6 +63,43 @@ class WhatsAppService {
                 }
             }
 
+            // CRITICAL FIX: Explicitly locate Chrome executable
+            // Render and other cloud platforms need this explicit path
+            const puppeteerCacheDir = path.join(__dirname, '../.puppeteer_cache');
+            let chromePath = null;
+
+            // Try to find Chrome in our local cache
+            const fs = require('fs');
+            if (fs.existsSync(puppeteerCacheDir)) {
+                try {
+                    // Look for Chrome in the cache directory
+                    const chromeDirs = fs.readdirSync(puppeteerCacheDir);
+                    for (const dir of chromeDirs) {
+                        if (dir.startsWith('chrome')) {
+                            const chromeDir = path.join(puppeteerCacheDir, dir);
+                            // Common Chrome executable paths
+                            const possiblePaths = [
+                                path.join(chromeDir, 'chrome-linux64', 'chrome'),
+                                path.join(chromeDir, 'chrome-linux', 'chrome'),
+                                path.join(chromeDir, 'chrome-mac', 'Chromium.app', 'Contents', 'MacOS', 'Chromium'),
+                                path.join(chromeDir, 'chrome-win', 'chrome.exe'),
+                            ];
+
+                            for (const p of possiblePaths) {
+                                if (fs.existsSync(p)) {
+                                    chromePath = p;
+                                    console.log(`✅ Found Chrome at: ${chromePath}`);
+                                    break;
+                                }
+                            }
+                            if (chromePath) break;
+                        }
+                    }
+                } catch (e) {
+                    console.log('⚠️ Error locating Chrome executable:', e.message);
+                }
+            }
+
             this.client = new Client({
                 authStrategy: new LocalAuth({
                     dataPath: path.join(__dirname, '../.wwebjs_auth')
@@ -73,7 +110,8 @@ class WhatsAppService {
                 },
                 puppeteer: {
                     handleSIGINT: false,
-                    cacheDirectory: path.join(__dirname, '../.puppeteer_cache'),
+                    executablePath: chromePath || undefined, // Use found Chrome or let Puppeteer find it
+                    cacheDirectory: puppeteerCacheDir,
                     args: [
                         '--no-sandbox',
                         '--disable-setuid-sandbox',

@@ -874,8 +874,6 @@ app.post('/api/user/sync', authenticateToken, async (req, res) => {
 
         // 3. Sync Conversation/Messages
         if (sessionId && messages && messages.length > 0) {
-            let conversation = await Conversation.findOne({ userId, sessionId });
-
             // Helper to handle various date formats (including "14:03" strings)
             const parseTimestamp = (ts) => {
                 if (!ts) return new Date();
@@ -906,31 +904,31 @@ app.post('/api/user/sync', authenticateToken, async (req, res) => {
                 return new Date(); // Fallback
             };
 
-            if (!conversation) {
-                // Create new conversation
-                conversation = new Conversation({
-                    userId,
-                    sessionId,
-                    title: conversationTitle || 'New Conversation',
-                    messages: messages.map(m => ({
-                        role: m.role || (m.isBot ? 'assistant' : 'user'),
-                        content: m.text || m.content,
-                        timestamp: parseTimestamp(m.timestamp),
-                        metadata: m
-                    }))
-                });
-            } else {
-                // Update existing conversation (replace history with latest synced version)
-                conversation.messages = messages.map(m => ({
-                    role: m.role || (m.isBot ? 'assistant' : 'user'),
-                    content: m.text || m.content,
-                    timestamp: parseTimestamp(m.timestamp),
-                    metadata: m
-                }));
-                conversation.updatedAt = Date.now();
-                if (conversationTitle) conversation.title = conversationTitle;
-            }
-            await conversation.save();
+            // Prepare messages
+            const formattedMessages = messages.map(m => ({
+                role: m.role || (m.isBot ? 'assistant' : 'user'),
+                content: m.text || m.content,
+                timestamp: parseTimestamp(m.timestamp),
+                metadata: m
+            }));
+
+            // Use findOneAndUpdate with upsert to avoid duplicate key errors
+            await Conversation.findOneAndUpdate(
+                { sessionId }, // Find by sessionId (unique index)
+                {
+                    $set: {
+                        userId,
+                        messages: formattedMessages,
+                        updatedAt: new Date(),
+                        ...(conversationTitle && { title: conversationTitle })
+                    },
+                    $setOnInsert: {
+                        title: conversationTitle || 'New Conversation',
+                        createdAt: new Date()
+                    }
+                },
+                { upsert: true, new: true }
+            );
         }
 
         res.json({ success: true, message: 'Data synced successfully' });

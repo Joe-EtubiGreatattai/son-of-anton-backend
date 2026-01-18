@@ -6,6 +6,7 @@
   "scripts": {
     "start": "node server.js",
     "dev": "nodemon server.js",
+    "postinstall": "npx puppeteer browsers install chrome",
     "test": "jest --verbose --coverage",
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",

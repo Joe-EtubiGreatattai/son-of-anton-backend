@@ -345,11 +345,82 @@ app.post('/api/feedback', async (req, res) => {
 // Get all feedback (Admin)
 app.get('/api/admin/feedback', async (req, res) => {
     try {
-        const feedback = await Feedback.find().populate('userId', 'username email').sort({ createdAt: -1 });
-        res.json({ feedback });
+        const page = parseInt(req.query.page) || 1;
+        const limit = parseInt(req.query.limit) || 10;
+        const skip = (page - 1) * limit;
+
+        const totalCount = await Feedback.countDocuments();
+        const totalPages = Math.ceil(totalCount / limit);
+
+        const feedback = await Feedback.find()
+            .populate('userId', 'username email')
+            .sort({ createdAt: -1 })
+            .skip(skip)
+            .limit(limit);
+
+        res.json({
+            feedback,
+            totalCount,
+            totalPages,
+            currentPage: page
+        });
     } catch (error) {
         console.error('Error fetching feedback:', error);
         res.status(500).json({ error: 'Failed to fetch feedback' });
+    }
+});
+
+// Track interest (clicks on View button)
+app.post('/api/track-view', async (req, res) => {
+    try {
+        const { productTitle, source, price, originalLink, affiliateLink, searchQuery, sessionId } = req.body;
+        const userId = req.userId || req.body.userId;
+
+        const tracking = new ClickTracking({
+            userId,
+            sessionId,
+            productTitle,
+            source,
+            price,
+            originalLink,
+            affiliateLink,
+            searchQuery,
+            clicked: true // Mark as clicked immediately
+        });
+
+        await tracking.save();
+        res.status(201).json({ success: true, message: 'View tracked' });
+    } catch (error) {
+        console.error('Track view error:', error);
+        res.status(500).json({ error: 'Failed to track view' });
+    }
+});
+
+// Get all clicks (Admin)
+app.get('/api/admin/clicks', async (req, res) => {
+    try {
+        const page = parseInt(req.query.page) || 1;
+        const limit = parseInt(req.query.limit) || 10;
+        const skip = (page - 1) * limit;
+
+        const totalCount = await ClickTracking.countDocuments({ clicked: true });
+        const totalPages = Math.ceil(totalCount / limit);
+
+        const clicks = await ClickTracking.find({ clicked: true })
+            .populate('userId', 'username email')
+            .sort({ createdAt: -1 })
+            .skip(skip)
+            .limit(limit);
+
+        res.json({
+            clicks,
+            totalCount,
+            totalPages,
+            currentPage: page
+        });
+    } catch (error) {
+        console.error('Error fetching clicks:', error);
+        res.status(500).json({ error: 'Failed to fetch click data' });
     }
 });
 // Product Schema and Model (Vendor Uploaded)
@@ -1861,9 +1932,52 @@ function addAffiliateLink(link, source) {
     }
 }
 
+/**
+ * Check relevance of a product title against the search query.
+ * Returns a score from 0 to 1.
+ */
+function checkRelevance(title, searchQuery) {
+    if (!title || !searchQuery) return 0;
+
+    const titleWords = title.toLowerCase().split(/\s+/).filter(w => w.length >= 2);
+    const queryWords = searchQuery.toLowerCase().split(/\s+/).filter(w => w.length >= 2);
+
+    if (queryWords.length === 0) return 1; // Generic match
+
+    let matchCount = 0;
+    for (const qWord of queryWords) {
+        // Strict match for short words/numbers (e.g. "15", "Pro", "Max")
+        if (qWord.length <= 3) {
+            const regex = new RegExp(`\\b${qWord}\\b`, 'i');
+            if (regex.test(title)) matchCount++;
+        } else if (title.toLowerCase().includes(qWord)) {
+            matchCount++;
+        }
+    }
+
+    const score = matchCount / queryWords.length;
+
+    // Special check: If query contains "airpod" and title contains "case" or "cover" or "strap"
+    // but the query does NOT contain those accessory words, it's probably irrelevant.
+    const accessoryWords = [
+        'case', 'cover', 'strap', 'silicone', 'sleeve', 'pouch', 'protector', 'skin', 'holder', 'shell',
+        'guard', 'glass', 'charger', 'cable', 'adapter', 'plug', 'lead', 'converter', 'earbud tips', 'ear tips'
+    ];
+
+    const hasAccessoryInTitle = accessoryWords.some(word => title.toLowerCase().includes(word));
+    const hasAccessoryInQuery = accessoryWords.some(word => searchQuery.toLowerCase().includes(word));
+
+    if (hasAccessoryInTitle && !hasAccessoryInQuery) {
+        // If query is for the main device but result is an accessory, drastically reduce score
+        return score * 0.2;
+    }
+
+    return score;
+}
+
 // Find best deals with affiliate tracking
 // Amazon (from PA-API) is treated as the primary source, other stores are secondary
-async function findBestDeals(results, searchQuery = '', userId = null, sessionId = null, category = null) {
+async function findBestDeals(results, searchQuery = '', userId = null, sessionId = null, category = null, onProgress = null) {
     if (!results || !results.shopping_results) {
         return { deals: null, totalValid: null };
     }
@@ -1960,6 +2074,14 @@ async function findBestDeals(results, searchQuery = '', userId = null, sessionId
             console.log(`🔄 Converting ${currency} ${price} to NGN: ₦${convertedPrice}`);
         }
 
+        const relevance = checkRelevance(title, searchQuery);
+
+        // Filter out very low relevance results (only if we have a search query)
+        if (searchQuery && relevance < 0.4) {
+            console.log(`🗑️ Filtering low relevance item: "${title}" (Score: ${relevance})`);
+            continue;
+        }
+
         validResults.push({
             title,
             price: convertedPrice,
@@ -1969,20 +2091,37 @@ async function findBestDeals(results, searchQuery = '', userId = null, sessionId
             link: affiliateLink,
             image: imageUrl,
             rating: item.rating || 'N/A',
-            reviews: item.reviews || 'N/A'
+            reviews: item.reviews || 'N/A',
+            relevance: relevance
         });
     }
+
+    if (onProgress) onProgress(`Cleaning and standardizing ${validResults.length} potential deals...`, validResults.length);
 
     if (validResults.length === 0) {
         return { deals: null, totalValid: null };
     }
 
     // Filter out items without valid links (excluding '#', empty, null, or undefined)
-    const resultsWithValidLinks = validResults.filter((d) =>
+    let resultsWithValidLinks = validResults.filter((d) =>
         d.link && d.link !== '#' && d.link.trim() !== ''
     );
 
     console.log(`📊 Filtered ${validResults.length} items → ${resultsWithValidLinks.length} items with valid links`);
+
+    // AI Pass: Filter results using Gemini for high accuracy
+    if (searchQuery && resultsWithValidLinks.length > 0) {
+        if (onProgress) onProgress(`Analyzing ${resultsWithValidLinks.length} results with AI to ensure maximum relevance...`, resultsWithValidLinks.length);
+        console.log(`🤖 Starting AI relevance pass for: "${searchQuery}"`);
+        // Limit to top 20 for AI to keep it fast and token-efficient
+        const batchForAI = resultsWithValidLinks.slice(0, 20);
+        const remaining = resultsWithValidLinks.slice(20);
+
+        const aiFilteredBatch = await aiService.rankResultsWithAI(searchQuery, batchForAI);
+        resultsWithValidLinks = [...aiFilteredBatch, ...remaining];
+        console.log(`✅ AI Pass complete: Kept ${resultsWithValidLinks.length} results`);
+        if (onProgress) onProgress(`AI analysis complete! Curated ${resultsWithValidLinks.length} prime deals.`, resultsWithValidLinks.length);
+    }
 
     if (resultsWithValidLinks.length === 0) {
         return { deals: null, totalValid: null };
@@ -2042,14 +2181,31 @@ async function findBestDeals(results, searchQuery = '', userId = null, sessionId
                 !d.source.toLowerCase().includes('dexstitches'))
     );
 
-    amazonResults.sort((a, b) => a.price - b.price);
-    jumiaResults.sort((a, b) => a.price - b.price);
-    slotResults.sort((a, b) => a.price - b.price);
-    kongaResults.sort((a, b) => a.price - b.price);
-    jijiResults.sort((a, b) => a.price - b.price);
-    ajeboResults.sort((a, b) => a.price - b.price);
-    dexStitchesResults.sort((a, b) => a.price - b.price);
-    otherResults.sort((a, b) => a.price - b.price);
+    // Sort each source by relevance (desc) then price (asc)
+    const sortResults = (list) => {
+        return list.sort((a, b) => {
+            // High relevance (e.g. >= 0.8) items always come first
+            if (a.relevance >= 0.8 && b.relevance < 0.8) return -1;
+            if (a.relevance < 0.8 && b.relevance >= 0.8) return 1;
+
+            // If both are high relevance or both are low, sort by relevance score first
+            if (Math.abs(a.relevance - b.relevance) > 0.2) {
+                return b.relevance - a.relevance;
+            }
+
+            // If relevance is similar, sort by price
+            return a.price - b.price;
+        });
+    };
+
+    sortResults(amazonResults);
+    sortResults(jumiaResults);
+    sortResults(slotResults);
+    sortResults(kongaResults);
+    sortResults(jijiResults);
+    sortResults(ajeboResults);
+    sortResults(dexStitchesResults);
+    sortResults(otherResults);
 
     // Helper to interleave lists for better source variety
     const interleave = (...lists) => {
@@ -3146,6 +3302,7 @@ app.post('/api/execute-search-stream', authenticateToken, async (req, res) => {
         // 2. Start Local Search (Fastest) AND External Search (Parallel but streamed as they finish)
 
         // --- LOCAL SEARCH ---
+        sendEvent('search-progress', { message: 'Checking local vendor inventory...' });
         let localDealsCount = 0;
         try {
             const localProducts = await searchLocalProducts(searchQuery);
@@ -3165,6 +3322,7 @@ app.post('/api/execute-search-stream', authenticateToken, async (req, res) => {
                     sendEvent('deals', localDeals);
                     allDeals.push(...localDeals);
                     localDealsCount = localDeals.length;
+                    sendEvent('search-progress', { message: `Found ${localDealsCount} items in local store.`, resultsFound: allDeals.length });
                 }
             }
         } catch (err) {
@@ -3174,34 +3332,45 @@ app.post('/api/execute-search-stream', authenticateToken, async (req, res) => {
         // Note: We'll check local-status AFTER all searches complete (see before 'done' event)
 
         // Detect category with AI
+        sendEvent('search-progress', { message: 'Analyzing query intent with AI...', resultsFound: allDeals.length });
         const aiCategory = await aiService.detectCategoryWithAI(searchQuery);
         console.log(`🧠 AI determined category for "${searchQuery}": ${aiCategory}`);
+        sendEvent('search-progress', { message: `Intent detected: ${aiCategory.toUpperCase()}. Deep searching relevant stores...`, resultsFound: allDeals.length });
 
         // --- EXTERNAL SEARCH ---
 
         const externalApiUrl = `http://localhost:${process.env.PORT || 3000}/api/search`;
         try {
+            sendEvent('search-progress', { message: 'Contacting external search engine...', resultsFound: allDeals.length });
             const apiResponse = await axios.get(externalApiUrl, { params: { q: searchQuery, category: aiCategory } });
             const apiResults = apiResponse.data?.results || [];
 
+            sendEvent('search-progress', { message: `Retrieved ${apiResults.length} raw results. Processing...`, resultsFound: allDeals.length });
+
             // Process these results (price conversion, affiliate links, etc.)
             // We can reuse findBestDeals logic but we need to pass just these results
-            // Wrap in expected structure for findBestDeals
             const wrappedResults = { shopping_results: apiResults };
 
-            // Note: findBestDeals filters and does affiliate links.
-            // We might want to use it
-            const processedExternal = await findBestDeals(wrappedResults, searchQuery, userId, session, aiCategory);
+            const processedExternal = await findBestDeals(
+                wrappedResults,
+                searchQuery,
+                userId,
+                session,
+                aiCategory,
+                (msg, count) => sendEvent('search-progress', { message: msg, resultsFound: allDeals.length + (count || 0) })
+            );
 
             if (processedExternal.deals && processedExternal.deals.length > 0) {
                 // Apply global prioritization (Jumia first) to this batch
                 const prioritizedBatch = await prioritizeResults(processedExternal.deals, country);
                 sendEvent('deals', prioritizedBatch);
                 allDeals.push(...prioritizedBatch);
+                sendEvent('search-progress', { message: `Optimized results from ${prioritizedBatch.length} sources.`, resultsFound: allDeals.length });
             }
 
         } catch (err) {
             console.error("External search stream error", err);
+            sendEvent('search-progress', { message: 'Search engine returned an error. Moving to alternatives...' });
         }
 
         // 3. Cache and cleanup
@@ -3255,6 +3424,7 @@ app.post('/api/execute-search-stream', authenticateToken, async (req, res) => {
         }
 
         // Send Done
+        sendEvent('search-progress', { message: `Search complete! Found ${allDeals.length} high-quality deals.`, resultsFound: allDeals.length });
         sendEvent('done', { totalValid: allDeals.length });
         res.end();
 

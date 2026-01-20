@@ -299,11 +299,57 @@ function formatDisplayMessage(message) {
     return message;
 }
 
+/**
+ * Use AI to rank/filter results based on relevance to the search query.
+ * This helps filter out accessories (like cases) when searching for devices.
+ */
+async function rankResultsWithAI(searchQuery, results) {
+    if (!results || results.length === 0) return [];
+
+    const itemsText = results.map((item, index) => `${index}: ${item.title}`).join('\n');
+
+    const prompt = `
+You are a highly analytical shopping relevance evaluator.
+The user's EXACT search intent is: "${searchQuery}"
+
+Here is a list of product results received from multiple stores:
+${itemsText}
+
+TASK: 
+Determine which items are a direct match for the user's intent.
+
+STRICT FILTERING RULES:
+1. NO ACCESSORIES: If the user searches for a main device (e.g., iPhone, AirPods, PlayStation), and the result is an accessory (case, cover, screen guard, charger, cable, strap, etc.), it MUST be marked as NOT RELEVANT.
+2. VERSION MATCHING: If the user specified a version (e.g., "iPhone 15"), any results for earlier versions (e.g., "iPhone 11") are NOT RELEVANT.
+3. ITEM TYPE: If the user searches for a specific item, different types (e.g., "iPhone 15" results in "MacBook" or "Apple Watch") are NOT RELEVANT.
+
+OUTPUT:
+Return ONLY a JSON array of indices for items that are HIGHLY RELEVANT and DIRECT MATCHES.
+Example: [0, 1, 4]
+
+Return ONLY the JSON array.`;
+
+    try {
+        const aiResponse = await callGeminiAPI(prompt);
+        const match = aiResponse.match(/\[.*\]/);
+        if (match) {
+            const relevantIndices = JSON.parse(match[0]);
+            console.log(`🤖 AI Filter: Kept ${relevantIndices.length}/${results.length} items for query "${searchQuery}"`);
+            return results.filter((_, index) => relevantIndices.includes(index));
+        }
+        return results; // Fallback if AI response is weird
+    } catch (error) {
+        console.error('AI ranking error:', error);
+        return results; // Fallback on error
+    }
+}
+
 module.exports = {
     callGeminiAPI,
     generateAIPrompt,
     buildUserPreferencesPrompt,
     buildSearchPreferencesPrompt,
     detectCategoryWithAI,
-    formatDisplayMessage
+    formatDisplayMessage,
+    rankResultsWithAI
 };

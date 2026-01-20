@@ -1,7 +1,7 @@
 const axios = require('axios');
 const chalk = require('chalk');
 
-const BACKEND_URL = 'http://192.168.0.127:3002/api/search';
+const BACKEND_URL = 'https://son-of-anton-backend-1n0j.onrender.com/api/search';
 
 async function runTest(query, expectedSources, label) {
     console.log(chalk.cyan(`\n[${label}] Testing query: "${query}"`));

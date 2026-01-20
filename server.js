@@ -13,7 +13,10 @@ const whatsappService = require('./services/whatsapp');
 const aiService = require('./services/ai');
 
 // Configure Multer for memory storage (direct upload to Gemini)
-const upload = multer({ storage: multer.memoryStorage() });
+const upload = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 10 * 1024 * 1024 } // 10MB Limit
+});
 
 const app = express();
 
@@ -1984,6 +1987,7 @@ async function findBestDeals(results, searchQuery = '', userId = null, sessionId
 
     const shoppingResults = results.shopping_results;
     const validResults = [];
+    const trackingData = []; // Collect tracking data for batch save
     const seenItems = new Set(); // START DEDUPLICATION
 
     console.log(`🔍 findBestDeals: Input results count: ${shoppingResults.length}`);
@@ -2034,22 +2038,17 @@ async function findBestDeals(results, searchQuery = '', userId = null, sessionId
         console.log(`🔗 Product: "${title.substring(0, 50)}..." → ${affiliateLink}`);
 
         if (userId || sessionId) {
-            try {
-                const tracking = new ClickTracking({
-                    userId: userId,
-                    sessionId: sessionId,
-                    productTitle: title,
-                    originalLink: originalLink,
-                    affiliateLink: affiliateLink,
-                    source: source,
-                    price: price,
-                    searchQuery: searchQuery,
-                    clicked: false
-                });
-                await tracking.save();
-            } catch (error) {
-                console.error('Error saving tracking data:', error);
-            }
+            trackingData.push({
+                userId: userId,
+                sessionId: sessionId,
+                productTitle: title,
+                originalLink: originalLink,
+                affiliateLink: affiliateLink,
+                source: source,
+                price: price,
+                searchQuery: searchQuery,
+                clicked: false
+            });
         }
 
         // Check if source is Nigerian platform (prices already in NGN)
@@ -2094,6 +2093,13 @@ async function findBestDeals(results, searchQuery = '', userId = null, sessionId
             reviews: item.reviews || 'N/A',
             relevance: relevance
         });
+    }
+
+    // Batch save tracking data
+    if (trackingData.length > 0) {
+        ClickTracking.insertMany(trackingData, { ordered: false })
+            .then(() => console.log(`💾 Batch saved ${trackingData.length} tracking records`))
+            .catch(err => console.error('Error batch saving tracking data:', err.message));
     }
 
     if (onProgress) onProgress(`Cleaning and standardizing ${validResults.length} potential deals...`, validResults.length);
@@ -3475,9 +3481,23 @@ app.post('/api/whatsapp/send', authenticateToken, async (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 const server = app.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
-    // Initialize WhatsApp service
-    whatsappService.initialize();
+    console.log(`🚀 Server running on port ${PORT}`);
+
+    // Log initial memory usage
+    const used = process.memoryUsage();
+    console.log(`📊 Initial Memory Usage:
+      RSS: ${Math.round(used.rss / 1024 / 1024 * 100) / 100} MB
+      Heap Total: ${Math.round(used.heapTotal / 1024 / 1024 * 100) / 100} MB
+      Heap Used: ${Math.round(used.heapUsed / 1024 / 1024 * 100) / 100} MB
+      External: ${Math.round(used.external / 1024 / 1024 * 100) / 100} MB`);
+
+    // Initialize WhatsApp service conditionally
+    if (process.env.ENABLE_WHATSAPP !== 'false') {
+        console.log('📱 Starting WhatsApp Service...');
+        whatsappService.initialize();
+    } else {
+        console.log('🚫 WhatsApp Service disabled by environment variable.');
+    }
 });
 
 // Handle graceful shutdown

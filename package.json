@@ -4,7 +4,7 @@
   "description": "this is node.js version of the bot",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js",
+    "start": "node --max-old-space-size=450 server.js",
     "dev": "nodemon server.js",
     "postinstall": "PUPPETEER_CACHE_DIR=./.puppeteer_cache npx puppeteer browsers install chrome",
     "test": "jest --verbose --coverage",

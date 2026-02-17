@@ -1,7 +1,7 @@
 const axios = require('axios');
 
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-1.5-flash';
-const GEMINI_URL = `https://generativelanguage.googleapis.com/v1/models/${GEMINI_MODEL}:generateContent`;
+const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
 const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY;
 
 if (!GOOGLE_API_KEY) {

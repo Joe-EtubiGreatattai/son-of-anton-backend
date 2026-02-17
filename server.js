@@ -59,8 +59,6 @@ const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY;
 const EXCHANGE_RATE_API_KEY = process.env.EXCHANGE_RATE_API_KEY;
 const JWT_SECRET = process.env.JWT_SECRET || 'your_jwt_secret';
 
-// Base URL for SerpAPI - REMOVED
-// const SERP_BASE_URL = 'https://serpapi.com/search';
 
 // Gemini configuration moved to aiService
 
@@ -599,7 +597,6 @@ const authenticateToken = async (req, res, next) => {
 
 app.use(authenticateToken);
 
-// Legacy Search Functions (SerpAPI/Amazon/eBay/Jumia/Konga) - REMOVED
 // Please rely on /api/search which calls the external Custom Search API.
 
 
@@ -1665,30 +1662,6 @@ async function setCachedSearch(query, data) {
 
 // Product search and AI helper functions moved to aiService
 
-// Search function (SerpAPI / Google Shopping)
-async function searchItem(itemName, country = 'US') {
-    try {
-        const params = {
-            q: itemName,
-            api_key: SERP_API_KEY,
-            engine: 'google_shopping',
-            num: 20 // Increased to get more results
-        };
-
-        if (country === 'NG') {
-            params.gl = 'ng';
-            params.google_domain = 'google.com.ng';
-            params.currency = 'NGN';
-            // Removed 'location' parameter as it can cause 400 errors if not exact
-        }
-
-        const response = await axios.get(SERP_BASE_URL, { params });
-        return response.data;
-    } catch (error) {
-        console.error('Search error:', error.message);
-        return null;
-    }
-}
 
 // Validate and enhance product link
 function ensureValidProductLink(originalLink, title, source) {

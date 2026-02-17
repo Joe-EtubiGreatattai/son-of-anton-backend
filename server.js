@@ -3111,7 +3111,7 @@ app.get('/api/search', async (req, res) => {
 
         // Call Custom Search API
         // Use environment variable or default to new VPS, avoids hardcoded Render issues
-        const scrapperUrl = process.env.SCRAPPER_URL || 'http://46.175.147.124:3001/api/search';
+        const scrapperUrl = process.env.SCRAPPER_URL || 'https://anton-scrapper.duckdns.org/api/search';
         console.log(`🔗 Calling Scrapper at: ${scrapperUrl}`);
 
         const response = await axios.get(scrapperUrl, {

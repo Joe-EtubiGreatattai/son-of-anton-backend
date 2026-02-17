@@ -3,7 +3,7 @@ require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
 const cors = require('cors');
-const chalk = require('chalk');
+// chalk removed because of ESM compatibility issues in CJS
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
@@ -693,7 +693,7 @@ async function searchAllSources(searchQuery, user = null, category = 'other') {
     console.log(`🌍 Searching with country preference: ${country}`);
 
     // Call Local Search and New External Search API in parallel
-    const externalApiUrl = `http://localhost:${process.env.PORT || 3000}/api/search`;
+    const externalApiUrl = process.env.SCRAPPER_URL || 'http://localhost:3001/api/search';
     console.log(`🌐 Calling External Search API at: ${externalApiUrl}`);
 
     const [localProducts, apiData] = await Promise.all([
@@ -3105,7 +3105,7 @@ app.get('/api/search', async (req, res) => {
             return res.status(400).json({ error: 'Query parameter "q" is required' });
         }
 
-        console.log(chalk.green(`\nNew web search request: "${q}" (Category: ${category})`));
+        console.log(`\nNew web search request: "${q}" (Category: ${category})`);
         console.log(`🔗 Forwarding to Custom Search API...`);
 
         // Call Custom Search API

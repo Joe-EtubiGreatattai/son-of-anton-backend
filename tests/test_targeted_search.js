@@ -1,7 +1,7 @@
 const axios = require('axios');
 const chalk = require('chalk');
 
-const BACKEND_URL = 'https://anton-bot.duckdns.org/api/search';
+const BACKEND_URL = 'http://192.168.0.173:3002/api/search';
 
 async function runTest(query, expectedSources, label) {
     console.log(chalk.cyan(`\n[${label}] Testing query: "${query}"`));

@@ -65,7 +65,7 @@ function buildUserPreferencesPrompt(user) {
     let prompt = '\n\nUser preferences:\n';
 
     if (pref.budget) {
-        prompt += `- Budget preference: around $${pref.budget}.\n`;
+        prompt += `- Budget preference: around ₦${pref.budget.toLocaleString()}.\n`;
     }
 
     if (pref.favoriteStores && pref.favoriteStores.length) {
@@ -97,11 +97,11 @@ function buildSearchPreferencesPrompt(user) {
     let prompt = '\n\nSearch preferences:\n';
 
     if (sp.minPrice !== undefined && sp.minPrice !== null) {
-        prompt += `- Minimum price: $${sp.minPrice}.\n`;
+        prompt += `- Minimum price: ₦${sp.minPrice.toLocaleString()}.\n`;
     }
 
     if (sp.maxPrice !== undefined && sp.maxPrice !== null) {
-        prompt += `- Maximum price: $${sp.maxPrice}.\n`;
+        prompt += `- Maximum price: ₦${sp.maxPrice.toLocaleString()}.\n`;
     }
 
     if (sp.preferredStores && sp.preferredStores.length) {

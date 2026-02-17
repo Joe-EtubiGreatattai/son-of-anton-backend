@@ -734,7 +734,7 @@ async function searchAllSources(searchQuery, user = null, category = 'other') {
     for (const item of apiResults) {
         const { val, cur: detectedCur } = parsePrice(item.price);
         const isNigerianSource = ['Jumia', 'Jiji', 'Konga', 'Slot', 'Ajebo', 'DexStitches'].some(s => item.source && item.source.includes(s));
-        const cur = (isNigerianSource && (!item.price || (!item.price.includes('$') && !item.price.includes('€') && !item.price.includes('£')))) ? 'NGN' : detectedCur;
+        const cur = (isNigerianSource && (!item.price || (!item.price.includes('$') && !item.price.includes('₦') && !item.price.includes('€') && !item.price.includes('£')))) ? 'NGN' : detectedCur;
 
         let finalPrice = val;
         if (country === 'NG' && cur !== 'NGN' && typeof convertToNGN === 'function') {

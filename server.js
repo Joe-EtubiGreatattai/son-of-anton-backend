@@ -60,7 +60,7 @@ const EXCHANGE_RATE_API_KEY = process.env.EXCHANGE_RATE_API_KEY;
 const JWT_SECRET = process.env.JWT_SECRET || 'your_jwt_secret';
 
 // Gemini configuration
-const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-1.5-flash';
+const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.0-flash';
 const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
 
 
